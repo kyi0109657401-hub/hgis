@@ -112,8 +112,9 @@ std::vector<Cell> build(const Spec& spec) {
 
 namespace {
 
-// 가장자리에서 잘린 트렌치가 이보다 짧으면 조사에 쓸모가 없어 버린다.
-constexpr double kMinTrimLen = 4.0;
+// 시굴트렌치 표준 규격(사용자 요청 2026-10-27): 20 m × 2 m가 기본이고, 20 m가 안 들어가는 가장자리와
+// 목표를 넘는 나머지는 10 m × 2 m다. 그 밖의 길이(잘린 길이, 평균 길이)는 만들지 않는다.
+constexpr double kShortLen = 10.0;
 
 OGRGeometry* geomFromWkb(const QByteArray& wkb) {
   if (wkb.isEmpty())
@@ -306,24 +307,22 @@ std::vector<Cell> buildInArea(const Spec& spec, const QByteArray& areaWkb, QStri
       const double v0 = vMin + j * stepV;
       for (long long i = 0; i < nu; ++i) {
         const double u0 = uMin + i * stepU;
-        const auto p0 = world(u0, v0);
-        const auto p1 = world(u0 + w, v0);
-        const auto p2 = world(u0 + w, v0 + len);
-        const auto p3 = world(u0, v0 + len);
-        OGRLinearRing ring;
-        ring.addPoint(p0.first, p0.second);
-        ring.addPoint(p1.first, p1.second);
-        ring.addPoint(p2.first, p2.second);
-        ring.addPoint(p3.first, p3.second);
-        ring.addPoint(p0.first, p0.second);
-        OGRPolygon poly;
-        poly.addRing(&ring);
+        const auto rectAt = [&](double vStart, double length) {
+          OGRLinearRing ring;
+          for (const auto& p : {world(u0, vStart), world(u0 + w, vStart), world(u0 + w, vStart + length),
+                                world(u0, vStart + length), world(u0, vStart)})
+            ring.addPoint(p.first, p.second);
+          OGRPolygon poly;
+          poly.addRing(&ring);
+          return poly;
+        };
+        const OGRPolygon poly = rectAt(v0, len);
         double keepV0 = v0;
         double keepLen = len;
         if (!area->Contains(&poly)) {
-          // 경계에 걸치면 통째로 버리지 않는다. 그러면 가장자리가 비어 배치가
-          // 고르지 않다. 폭 2 m는 그대로 두고 길이만 잘라 구역 안에 넣는다.
-          if (!area->Intersects(&poly))
+          // 경계에 걸치면 통째로 버리지 않는다. 그러면 가장자리가 비어 배치가 고르지 않다.
+          // 길이를 아무렇게나 자르지 않고 10 m 트렌치를 그 칸 안 앞·가운데·뒤에 넣어 본다.
+          if (!(len > kShortLen) || !area->Intersects(&poly))
             continue;
           Geometry inter(area->Intersection(&poly));
           if (!inter || inter->IsEmpty()) {
@@ -337,36 +336,20 @@ std::vector<Cell> buildInArea(const Spec& spec, const QByteArray& areaWkb, QStri
           });
           loV = std::max(loV, v0);
           hiV = std::min(hiV, v0 + len);
-          double cut = hiV - loV;
-          if (!(cut >= kMinTrimLen) || cut > len)
-            continue;
-          // 교차 상자는 모서리에서 조금 넘칠 수 있다. 들어갈 때까지 양끝을 줄인다.
           bool fits = false;
-          for (int attempt = 0; attempt < 4 && cut >= kMinTrimLen; ++attempt) {
-            const auto q0 = world(u0, loV);
-            const auto q1 = world(u0 + w, loV);
-            const auto q2 = world(u0 + w, loV + cut);
-            const auto q3 = world(u0, loV + cut);
-            OGRLinearRing tr;
-            tr.addPoint(q0.first, q0.second);
-            tr.addPoint(q1.first, q1.second);
-            tr.addPoint(q2.first, q2.second);
-            tr.addPoint(q3.first, q3.second);
-            tr.addPoint(q0.first, q0.second);
-            OGRPolygon tp;
-            tp.addRing(&tr);
-            if (area->Contains(&tp)) {
-              fits = true;
+          const bool topCut = hiV < v0 + len - 1e-9;  // hug the cut edge so the boundary stays covered
+          for (double start : {topCut ? hiV - kShortLen : loV, (loV + hiV - kShortLen) * 0.5,
+                               topCut ? loV : hiV - kShortLen}) {
+            start = std::clamp(start, v0, v0 + len - kShortLen);
+            const OGRPolygon piece = rectAt(start, kShortLen);
+            if ((fits = area->Contains(&piece))) {
+              keepV0 = start;
               break;
             }
-            const double shrink = std::max(0.25, cut * 0.05);
-            loV += shrink * 0.5;
-            cut -= shrink;
           }
-          if (!fits || cut < kMinTrimLen)
+          if (!fits)
             continue;
-          keepV0 = loV;
-          keepLen = cut;
+          keepLen = kShortLen;
         }
         const auto k0 = world(u0, keepV0);
         Cell cell;
@@ -471,52 +454,69 @@ RatioFill buildForTargetRatio(const QByteArray& areaWkb, double targetPct, doubl
   s.namePrefix = targetPct <= 3.5 ? QStringLiteral("Sp-") : QStringLiteral("Tr-");
 
   double bestArea = std::numeric_limits<double>::infinity();
-  const double lengths[] = {8.0, 10.0, 12.0, 16.0, 20.0};
-  for (double len : lengths) {
+  long long bestTens = std::numeric_limits<long long>::max();
+  for (double len : {kMaxLength}) {  // 20 m, with 10 m at the edges (buildInArea)
     s.trenchLength = len;
     for (double balk = 2.0; balk <= 120.0; balk += 2.0) {
       s.balkWidth = balk;
       auto cells = buildInArea(s, areaWkb);
       if (cells.empty())
         continue;
+      // The candidate that, once its surplus goes 10 m at a time (below), keeps the most 20 m trenches.
       const double candidateArea = totalArea(cells);
-      if (candidateArea >= targetArea && candidateArea < bestArea) {
+      long long tens = -static_cast<long long>(std::floor((candidateArea - targetArea) / (width * kShortLen) + 1e-9));
+      for (const Cell& cell : cells) tens += cell.length > kShortLen + 1e-9 ? 0 : 1;
+      tens = std::abs(tens);  // 10 m ones left after dropping, or 20 m ones shortened
+      if (candidateArea >= targetArea && tens < bestTens) {
+        bestTens = tens;
         bestArea = candidateArea;
         best.cells = std::move(cells);
         best.balk = balk;
         best.azimuthDeg = azimuthDeg;
       }
-      if (bestArea - targetArea < std::max(1e-9, targetArea * 1e-10)) break;
+      if (bestTens == 0) break;  // only 20 m trenches, none over
     }
-    if (bestArea - targetArea < std::max(1e-9, targetArea * 1e-10)) break;
+    if (bestTens == 0) break;
   }
   if (best.cells.empty()) {
-    best.error = QStringLiteral("현재 구역과 방향에서 폭 %1 m·길이 20 m 이하로 목표 %2%를 배치할 수 없습니다. 기존 격자는 유지됩니다.")
+    best.error = QStringLiteral("현재 구역과 방향에서 폭 %1 m·길이 20 m·10 m 트렌치로 목표 %2%를 배치할 수 없습니다. 기존 격자는 유지됩니다.")
                      .arg(width).arg(targetPct);
     return best;
   }
 
-  // Shrinking only the length keeps each result inside its original rectangle:
-  // containment and separation survive, including holes and concave boundaries.
-  const double factor = targetArea / bestArea;
-  for (Cell& cell : best.cells) {
-    const auto original = cell.ring;
-    const double dx = (original[3].first - original[0].first) * ((1.0 - factor) * 0.5);
-    const double dy = (original[3].second - original[0].second) * ((1.0 - factor) * 0.5);
-    cell.ring[0] = {original[0].first + dx, original[0].second + dy};
-    cell.ring[1] = {original[1].first + dx, original[1].second + dy};
-    cell.ring[2] = {original[2].first - dx, original[2].second - dy};
-    cell.ring[3] = {original[3].first - dx, original[3].second - dy};
-    cell.ring[4] = cell.ring[0];
-    cell.length *= factor;
-    if (!validCell(cell)) {
-      best.cells.clear();
-      best.length = 0.0;
-      best.error = QStringLiteral("목표 면적에 맞는 유효한 시굴격자를 계산하지 못했습니다.");
-      return best;
+  // Lengths are never averaged down to the target (the old 9.84 m trenches). What the plan holds
+  // beyond it goes 10 m at a time, spread over the numbering: 10 m ones are left out, then 20 m
+  // trenches become 10 m (the middle of the old one, so it stays inside and apart). Over < 20 ㎡.
+  auto surplus = static_cast<size_t>(std::floor((bestArea - targetArea) / (width * kShortLen) + 1e-9));
+  for (const bool shorten : {false, true}) {
+    std::vector<size_t> picks;
+    for (size_t i = 0; i < best.cells.size(); ++i)
+      if ((best.cells[i].length > kShortLen + 1e-9) == shorten) picks.push_back(i);
+    const size_t take = std::min(surplus, picks.size());
+    std::vector<bool> drop(best.cells.size(), false);
+    for (size_t k = 0; k < take; ++k) {
+      Cell& cell = best.cells[picks[(2 * k + 1) * picks.size() / (2 * take)]];
+      if (!shorten) {
+        drop[&cell - best.cells.data()] = true;
+        continue;
+      }
+      const auto r = cell.ring;
+      const double f = (1.0 - kShortLen / cell.length) * 0.5;
+      const double dx = (r[3].first - r[0].first) * f, dy = (r[3].second - r[0].second) * f;
+      cell.ring = {{r[0].first + dx, r[0].second + dy}, {r[1].first + dx, r[1].second + dy},
+                   {r[2].first - dx, r[2].second - dy}, {r[3].first - dx, r[3].second - dy},
+                   {r[0].first + dx, r[0].second + dy}};
+      cell.length = kShortLen;
     }
-    best.length = std::max(best.length, cell.length);
+    std::vector<Cell> kept;
+    for (size_t i = 0; i < best.cells.size(); ++i)
+      if (!drop[i]) kept.push_back(best.cells[i]);
+    best.cells = std::move(kept);
+    surplus -= take;
   }
+  TrenchTerrain::numberFromHighSide(best.cells, azimuthDeg, s.namePrefix);
+  for (const Cell& cell : best.cells) best.length = std::max(best.length, cell.length);
+  if (!cellsValid(best.cells, &best.error)) best.cells.clear();
   best.ratioPct = totalArea(best.cells) / areaM2 * 100.0;
   return best;
 }

@@ -157,14 +157,18 @@ void KaTrenchDialog::showRatioPlan(const TrenchGridGenerator::RatioFill& plan, d
     m_balk->setValue(plan.balk);
   }
   setSummaryTone("ok");
+  // 표준 규격 (사용자 요청 2026-10-27): straight trenches are 20 m or 10 m; say how many of each.
+  int twenty = 0;
+  for (const auto& cell : plan.cells) twenty += cell.arm == 0.0 && cell.length > 15.0 ? 1 : 0;
+  const QString straight = QStringLiteral("20 m %1개 · 10 m %2개").arg(twenty).arg(int(plan.cells.size()) - twenty);
   const QString shape = plan.arm > 0.0
                             ? QStringLiteral("ㄱ·ㄴ자 트렌치 %2개 · 폭 2 m · 팔 %3 m + %3 m · 둑 %4 m 이상")
-                            : QStringLiteral("트렌치 %2개 · 폭 2 m · 최대 길이 %3 m · 둑 %4 m");
+                            : QStringLiteral("트렌치 %2개(%3) · 폭 2 m · 둑 %4 m");
   m_ratio->setText(
       (QStringLiteral("%1 · ") + shape + QStringLiteral(" · 총 %5㎡ · 비율 %6% (목표 %7%) · 방위 %8°"))
           .arg(surveyKind() == SurveyKind::Trial ? QStringLiteral("시굴조사") : QStringLiteral("표본조사"))
           .arg(plan.cells.size())
-          .arg(plan.arm > 0.0 ? QLocale().toString(plan.arm, 'g', 4) : QLocale().toString(plan.length, 'f', 2))
+          .arg(plan.arm > 0.0 ? QLocale().toString(plan.arm, 'g', 4) : straight)
           .arg(QLocale().toString(plan.balk, 'f', 0))
           .arg(QLocale().toString(TrenchGridGenerator::totalArea(plan.cells), 'f', 2))
           .arg(QLocale().toString(plan.ratioPct, 'f', 1))

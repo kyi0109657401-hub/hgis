@@ -111,6 +111,17 @@ private slots:
     QVERIFY(!lock->isEnabled() && !dialog.gridLock());
   }
 
+  // 표준 규격 (사용자 요청 2026-10-27): the 10% plan says how many 20 m and 10 m trenches it lays, and no length
+  // of its own; 1000 ㎡ of a 100 m square is 23 × 20 m + 4 × 10 m.
+  void ratioSummaryCountsTwentyAndTenMetreTrenches() {
+    KaTrenchDialog dialog;
+    dialog.setArea(squareWkb(100), 10000.0);
+    QTRY_VERIFY_WITH_TIMEOUT(!dialog.planPending(), 20000);
+    const QString summary = dialog.findChild<QLabel*>(QStringLiteral("trenchSummary"))->text();
+    QVERIFY2(summary.contains(QStringLiteral("20 m 23개 · 10 m 4개")) && summary.contains(QStringLiteral("비율 10.0%")),
+             qPrintable(summary));
+  }
+
   void paperWindowCarriesTheMeterAndTheDial() {
     qApp->setProperty("kaPaperLook", true);
     KaTrenchDialog dialog;

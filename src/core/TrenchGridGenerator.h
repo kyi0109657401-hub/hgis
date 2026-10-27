@@ -121,8 +121,8 @@ struct RatioFill {
 RatioFill buildForTargetRatio(const QByteArray& areaWkb, double targetPct, double width = 2.0,
                               double azimuthDeg = 0.0, double armLength = 0.0, int armBend = 0);
 
-// The cells cover targetPct of areaM2 as a plan of that kind must: straight trenches exactly,
-// whole ㄱ·ㄴ자 trenches at least and by less than one more trench. targetPct 0 = no target.
+// The cells cover targetPct of areaM2 as a plan must: at least the target, and over it by less than
+// the smallest trench (whole 20 m · 10 m or ㄱ·ㄴ자 trenches, never shortened). targetPct 0 = no target.
 bool meetsTarget(const std::vector<Cell>& cells, double areaM2, double targetPct);
 
 // Sum of trench areas (w × len per cell, square metres).

@@ -531,9 +531,9 @@ void TestDemTrench::ratioFill_respectsGeometryContract() {
   const double unionArea = OGR_G_Area(OGRGeometry::ToHandle(united.get()));
   const double targetArea = OGR_G_Area(OGRGeometry::ToHandle(area.get())) * target / 100.0;
   QVERIFY2(std::abs(sum - unionArea) < 1e-6, "trenches must not overlap");
-  QVERIFY2(std::abs(unionArea - targetArea) < std::max(1e-6, targetArea * 1e-8),
+  QVERIFY2(unionArea >= targetArea - 1e-6 && unionArea - targetArea < 20.0,  // whole 20·10 m: just over (2026-10-27)
            qPrintable(QStringLiteral("actual %1, target %2").arg(unionArea, 0, 'g', 17).arg(targetArea, 0, 'g', 17)));
-  QVERIFY(std::abs(plan.ratioPct - target) < 1e-7);
+  QVERIFY(plan.ratioPct >= target - 1e-7);
   QVERIFY(std::abs(plan.length - maxLength) < 1e-7);
 }
 
