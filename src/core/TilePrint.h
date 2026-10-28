@@ -9,6 +9,7 @@
 
 #include <functional>
 
+class QImage;
 class QPagedPaintDevice;
 
 // 큰 도면을 작은 용지 여러 장에 나눠 찍는다(예: A0 도면을 A3 9장으로).
@@ -62,7 +63,9 @@ public:
   // 세로·가로 중 장수가 적은 쪽. 같으면 세로.
   static TilePlan bestPlan(const TilePlanRequest& request);
   static TileFit fit(const QSizeF& drawingMm, const QPageSize& sheet, const QMarginsF& printerMarginMm);
-  static QSizeF pdfPageSizeMm(const QString& pdfPath, QString* error = nullptr);
+  // thumbnail 을 주면 첫 쪽을 긴 변 thumbnailLongPx 로 함께 그린다(문서를 두 번 열지 않으려고).
+  static QSizeF pdfPageSizeMm(const QString& pdfPath, QString* error = nullptr, QImage* thumbnail = nullptr,
+                              int thumbnailLongPx = 0);
   // 도면 축척(분모)보다 크게 뽑을 때 고를 딱 떨어지는 축척. 배율이 작은 것부터, maxFactor 이하만.
   static QList<double> enlargedScales(double drawingDenominator, double maxFactor, int limit = 3);
   // 1:2,500 처럼 세 자리마다 쉼표를 찍는다.

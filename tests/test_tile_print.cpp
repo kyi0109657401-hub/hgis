@@ -54,6 +54,16 @@ bool paper(const QColor& c) {
   return c.alpha() < 30 || (c.red() > 230 && c.green() > 230 && c.blue() > 230);
 }
 
+// 용지 요청을 무시하고 자기 용지(A4)를 고집하는 장치. 어떤 프린터 드라이버가 이렇게 군다.
+class StubbornA4Writer : public QPdfWriter {
+public:
+  using QPdfWriter::QPdfWriter;
+  bool setPageLayout(const QPageLayout&) override { return false; }
+  bool setPageSize(const QPageSize&) override { return false; }
+  bool setPageOrientation(QPageLayout::Orientation) override { return false; }
+  bool setPageMargins(const QMarginsF&, QPageLayout::Unit) override { return false; }
+};
+
 TilePlanRequest request(const QSizeF& drawingMm, QPageSize::PageSizeId sheet, double labelBandMm) {
   TilePlanRequest r;
   r.drawingMm = drawingMm;
@@ -68,6 +78,26 @@ TilePlanRequest request(const QSizeF& drawingMm, QPageSize::PageSizeId sheet, do
 class TestTilePrint : public QObject {
   Q_OBJECT
 private slots:
+  // 2026-10-28 현장: A0를 A3 9장으로 나눠 찍는데 A4가 나왔다. 장치가 요청한 용지를 받지 않으면
+  // 엉뚱한 종이에 찍지 말고, 어느 용지를 달라 했고 장치가 어느 용지로 두었는지 말하고 멈춘다.
+  void tilesStopWhenTheDeviceKeepsAnotherPaper() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString source = makeQuadrantPdf(dir.filePath(QStringLiteral("a0.pdf")), QSizeF(841, 1189));
+    const TilePlan plan = TilePrint::bestPlan(request(QSizeF(841, 1189), QPageSize::A3, 6.0));
+    QVERIFY(plan.ok);
+    StubbornA4Writer writer(dir.filePath(QStringLiteral("stubborn.pdf")));
+    writer.setResolution(100);
+    QString error;
+    QVERIFY(!TilePrint::renderTiles(source, plan, &writer, 100.0, TilePrint::Options(), &error));
+    QVERIFY2(error.contains(QStringLiteral("A3")) && error.contains(QStringLiteral("A4")), qPrintable(error));
+    // 한 장 인쇄도 같다.
+    error.clear();
+    StubbornA4Writer one(dir.filePath(QStringLiteral("stubborn-one.pdf")));
+    QVERIFY(!TilePrint::renderFit(source, QPageSize(QPageSize::A3), QMarginsF(5, 5, 5, 5), &one, 100.0, &error));
+    QVERIFY2(error.contains(QStringLiteral("A3")) && error.contains(QStringLiteral("A4")), qPrintable(error));
+  }
+
   void a0DrawingNeedsNineA3Sheets() {
     // A3 한 장: 가장자리 5 mm, 번호 띠 6 mm → 도면 칸 287×404 mm, 겹침 10 mm.
     const TilePlan plan = TilePrint::bestPlan(request(QSizeF(841, 1189), QPageSize::A3, 6.0));

@@ -53,7 +53,7 @@
 1270 src/core/SurveyStorage.cpp
 515 src/core/Terrain3dLayoutService.cpp
 664 src/core/Terrain3dService.cpp
-487 src/core/TilePrint.cpp
+521 src/core/TilePrint.cpp
 398 src/core/TopographicCatalog.cpp
 370 src/core/TopographicSourceCrs.cpp
 689 src/core/TrenchGridGenerator.cpp
@@ -83,7 +83,7 @@
 338 tests/test_survey_contour.cpp
 607 tests/test_terrain_3d.cpp
 1426 tests/test_theme.cpp
-426 tests/test_tile_print.cpp
+456 tests/test_tile_print.cpp
 1442 tests/test_topographic_browser.cpp
 320 tests/test_topographic_catalog.cpp
 922 tests/test_topographic_import.cpp

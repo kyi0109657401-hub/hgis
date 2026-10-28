@@ -82,12 +82,41 @@ bool drawRegion(QPdfDocument& doc, QPainter& painter, const QSize& fullPx, const
   return true;
 }
 
-// 용지·방향·여백을 맞추고, 도면이 찍힐 칸이 실제로 들어가는지 확인한다.
+// A3 처럼 표준 용지면 그 이름, 아니면 29.7×42 cm.
+QString paperName(const QPageSize& size) {
+  const QSizeF mm = size.size(QPageSize::Millimeter);
+  const QString iso = TilePrint::isoName(mm);
+  return iso.isEmpty() ? QStringLiteral("%1×%2 cm").arg(cm(mm.width()), cm(mm.height())) : iso;
+}
+
+QString orientationName(bool landscape) {
+  return landscape ? QStringLiteral("가로") : QStringLiteral("세로");
+}
+
+// 용지·방향·여백을 맞추고, 장치가 정말 그 용지로 바뀌었는지와 도면이 찍힐 칸이 들어가는지 확인한다.
 bool preparePage(QPagedPaintDevice* device, const QPageSize& sheet, bool landscape,
                  const QMarginsF& marginMm, const QSizeF& needMm, QString* error) {
-  device->setPageLayout(QPageLayout(sheet, landscape ? QPageLayout::Landscape : QPageLayout::Portrait,
-                                    marginMm, QPageLayout::Millimeter));
-  const QRectF paint = device->pageLayout().paintRect(QPageLayout::Millimeter);
+  const QPageLayout::Orientation orientation = landscape ? QPageLayout::Landscape : QPageLayout::Portrait;
+  // 한 번에 넣는 setPageLayout 은 여백이 프린터 최소보다 좁으면 통째로 무시된다. 그러면 따로따로 넣는다.
+  if (!device->setPageLayout(QPageLayout(sheet, orientation, marginMm, QPageLayout::Millimeter))) {
+    device->setPageSize(sheet);
+    device->setPageOrientation(orientation);
+    device->setPageMargins(marginMm, QPageLayout::Millimeter);
+  }
+  const QPageLayout layout = device->pageLayout();
+  const QSizeF want = portraitMm(sheet);
+  const QSizeF have = portraitMm(layout.pageSize());
+  const bool haveLandscape = layout.orientation() == QPageLayout::Landscape;
+  if (std::abs(want.width() - have.width()) > 1.0 || std::abs(want.height() - have.height()) > 1.0 ||
+      haveLandscape != landscape) {
+    // 어떤 프린터 드라이버는 용지를 바꿔 달라는 요청을 받지 않고 자기 용지로 둔다(2026-10-28, A3 9장이 A4로 나옴).
+    // 그 종이에 잘라 찍으면 붙였을 때 축척이 틀어지니 찍지 않고 말한다.
+    return fail(error, QStringLiteral("프린터가 %1 %2 용지로 바꾸지 않고 %3 %4로 두었습니다. "
+                                      "「프린터 속성」의 기본 설정에서 용지를 %1로 고른 뒤 다시 인쇄하세요.")
+                           .arg(paperName(sheet), orientationName(landscape), paperName(layout.pageSize()),
+                                orientationName(haveLandscape)));
+  }
+  const QRectF paint = layout.paintRect(QPageLayout::Millimeter);
   if (paint.width() + 0.5 < needMm.width() || paint.height() + 0.5 < needMm.height()) {
     // 줄여 찍으면 붙였을 때 축척이 틀어진다. 여백을 다시 잡도록 멈춘다.
     return fail(error, QStringLiteral("프린터가 여백을 더 크게 잡습니다. 인쇄 창을 닫았다가 다시 열어 주세요."));
@@ -328,10 +357,15 @@ TileFit TilePrint::fit(const QSizeF& drawingMm, const QPageSize& sheet, const QM
   return f;
 }
 
-QSizeF TilePrint::pdfPageSizeMm(const QString& pdfPath, QString* error) {
+QSizeF TilePrint::pdfPageSizeMm(const QString& pdfPath, QString* error, QImage* thumbnail, int thumbnailLongPx) {
   QPdfDocument doc;
   if (!loadPdf(doc, pdfPath, error)) return {};
-  return pageMm(doc);
+  const QSizeF mm = pageMm(doc);
+  if (thumbnail && thumbnailLongPx > 0 && !mm.isEmpty()) {
+    const double k = thumbnailLongPx / std::max(mm.width(), mm.height());
+    *thumbnail = doc.render(0, QSize(int(mm.width() * k), int(mm.height() * k)));
+  }
+  return mm;
 }
 
 QList<double> TilePrint::enlargedScales(double drawingDenominator, double maxFactor, int limit) {

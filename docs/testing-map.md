@@ -40,6 +40,7 @@ ctest --test-dir build -C Release -R '<아래 이름>' --output-on-failure
 | E | `browser_polish` | 파일함: 「SD 카드」 없음, 「상위」는 오른쪽 끝, 조용한 24 px 바로가기 |
 | E | `alert_polish` | 실패 알림 29곳이 한 틀(KaUserError)이다(소스 글을 읽어 남은 기본 경고창이 없음을 본다) |
 | E | `layout_sheet_rules`·`save_open_drawing` | 범례는 용지 밖에도 놓을 수 있다: 내용에 맞춰 흘러도, 마우스로 놓은 뒤에도, 도면을 다시 열어도 놓은 자리 그대로 |
+| E | `save_open_drawing`·`tile_print` | 용지를 바꾸면 축척자·축척 글·좌표계·방위는 새 용지의 아래 띠 자리로 돌아온다(용지 자체는 제자리); 인쇄 장치가 요청한 용지로 바뀌지 않으면 찍지 않고 어느 용지로 두었는지 말한다 |
 | F 제출 | `checklist_engine` | 자기교차·빈 도형·0면적 차단 |
 | F | `export_survey_areas` | SHP+PDF 패키지 |
 | G 배포 | `theme_qss` 슬롯 `versionAndLaunchScripts_exist` | `VERSION`·바로가기·QGIS 핀 파일 |

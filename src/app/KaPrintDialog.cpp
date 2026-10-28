@@ -17,7 +17,6 @@
 #include <QMessageBox>
 #include <QPageLayout>
 #include <QPainter>
-#include <QPdfDocument>
 #include <QPdfWriter>
 #include <QPrintDialog>
 #include <QPrinter>
@@ -73,14 +72,8 @@ KaPrintDialog::KaPrintDialog(const QString& pdfPath, const QString& title, doubl
   setProperty("kaPlate", m_plate);
   setWindowTitle(QStringLiteral("도면 인쇄"));
   QString readError;
-  m_drawingMm = TilePrint::pdfPageSizeMm(pdfPath, &readError);
-  {
-    QPdfDocument doc;
-    if (doc.load(pdfPath) == QPdfDocument::Error::None && doc.pageCount() > 0 && !m_drawingMm.isEmpty()) {
-      const double k = 560.0 / std::max(m_drawingMm.width(), m_drawingMm.height());
-      m_thumb = doc.render(0, QSize(int(m_drawingMm.width() * k), int(m_drawingMm.height() * k)));
-    }
-  }
+  // 도면 PDF 는 한 번만 연다: 크기와 미리보기 그림을 함께 읽는다.
+  m_drawingMm = TilePrint::pdfPageSizeMm(pdfPath, &readError, &m_thumb, 560);
 
   auto* root = new QVBoxLayout(this);
   auto* form = new QFormLayout;
@@ -632,7 +625,10 @@ void KaPrintDialog::printNow() {
   printer.setFullPage(false);
   // 사무실 프린터 기본값이 양면인 경우가 많다. 속성 창은 단면으로 연다.
   printer.setDuplex(QPrinter::DuplexNone);
+  // 용지와 방향을 속성 창 전에 넣는다. 그래야 속성 창도, 거기서 돌아온 설정도 같은 용지를 말한다.
   printer.setPageSize(sheetSize());
+  const bool landscape = isTiled() ? m_plan.landscape : m_fit.landscape;
+  printer.setPageOrientation(landscape ? QPageLayout::Landscape : QPageLayout::Portrait);
   QPrintDialog systemDialog(&printer, this);
   systemDialog.setWindowTitle(QStringLiteral("프린터 속성"));
   systemDialog.setOption(QPrintDialog::PrintToFile, false);
@@ -660,7 +656,9 @@ void KaPrintDialog::printNow() {
     return;
   }
   saveSettings();
-  QString done = QStringLiteral("프린터로 %1쪽을 보냈습니다.").arg(pageCount());
+  QString done = QStringLiteral("%1 %2 %3쪽을 프린터로 보냈습니다.")
+                     .arg(m_sheet->currentText(), landscape ? QStringLiteral("가로") : QStringLiteral("세로"))
+                     .arg(pageCount());
   if (isTiled() && m_plan.sheets.size() > 1)
     done += tileOptions().overview ? QStringLiteral("\n다 나오면 첫 장(붙이는 순서)을 보며 붙이세요.")
                                    : QStringLiteral("\n다 나오면 장 번호 순서대로 붙이세요.");
