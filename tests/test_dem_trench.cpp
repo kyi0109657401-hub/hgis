@@ -189,7 +189,7 @@ void TestDemTrench::buildInAreaKeepsCellsInsideAndRatio() {
   s.azimuthDeg = 0.0;
   const QByteArray area = squareWkb(0.0, 0.0, 100.0, 100.0);
   const auto cells = TrenchGridGenerator::buildInArea(s, area);
-  QCOMPARE(static_cast<int>(cells.size()), 36);  // 9칸 × (온전한 3줄 + 잘린 1줄)
+  QCOMPARE(static_cast<int>(cells.size()), 27);  // 9칸 × 온전한 3줄. 다 안 들어가는 4째 줄은 비운다(2026-10-28)
   int full = 0, trimmed = 0;
   double topMost = -1e300;
   for (const auto& c : cells) {
@@ -202,15 +202,15 @@ void TestDemTrench::buildInAreaKeepsCellsInsideAndRatio() {
     }
   }
   QCOMPARE(full, 27);
-  QCOMPARE(trimmed, 9);
-  QVERIFY2(topMost > 99.0, "위쪽 가장자리까지 덮어야 고르다");
+  QCOMPARE(trimmed, 0);
+  QVERIFY2(topMost > 79.0, "온전한 3째 줄(60~80 m)까지 깔린다");
   const double total = TrenchGridGenerator::totalArea(cells);
-  QVERIFY2(std::abs(total - (27 * 40.0 + 9 * 20.0)) < 0.01, qPrintable(QString::number(total)));
+  QVERIFY2(std::abs(total - 27 * 40.0) < 0.01, qPrintable(QString::number(total)));
   const double pct = total / (100.0 * 100.0) * 100.0;
-  QVERIFY2(pct > 12.0 && pct < 13.0, qPrintable(QString::number(pct)));  // 12.6%
+  QVERIFY2(pct > 10.0 && pct < 11.0, qPrintable(QString::number(pct)));  // 10.8%
 }
 
-// 짧은 구역에서는 트렌치 길이를 잘라 도형 전체가 내부에 들어가야 한다.
+// 20 m가 다 안 들어가는 짧은 구역에는 잘라 넣지 않는다(고른 길이 하나만, 2026-10-28).
 void TestDemTrench::buildInArea_shortAreaTrimsInside() {
   TrenchGridGenerator::Spec s;
   s.trenchWidth = 2.0;
@@ -219,7 +219,7 @@ void TestDemTrench::buildInArea_shortAreaTrimsInside() {
   s.azimuthDeg = 0.0;
   const QByteArray area = squareWkb(0.0, 0.0, 12.0, 18.0);
   const auto cells = TrenchGridGenerator::buildInArea(s, area);
-  QVERIFY2(!cells.empty(), "짧은 조사구역에도 시굴격자가 생겨야 한다");
+  QVERIFY2(cells.empty(), "짧은 조사구역에 잘린 트렌치를 만들면 안 된다");
   for (const auto& c : cells) {
     for (const auto& point : c.ring)
       QVERIFY2(point.first >= -1e-6 && point.first <= 12.0 + 1e-6 &&
@@ -381,8 +381,8 @@ void TestDemTrench::buildForTargetRatio_honoursTerrainAzimuth() {
            qPrintable(QStringLiteral("장축 방위 45°여야 함, 실제 %1").arg(az)));
 }
 
-// 고르게 깔리려면 경계에 걸친 트렌치를 버리지 말고 길이를 잘라 남겨야 한다.
-// 버리면 가장자리가 비어 배치가 한쪽으로 쏠린다.
+// 경계에 걸친 트렌치는 잘라 남기지 않고 비운다: 고른 길이 하나로만 깐다(사용자 요청 2026-10-28,
+// 예전에는 잘라 남겼다).
 void TestDemTrench::buildInArea_trimsEdgeTrenchesInsteadOfDropping() {
   // 폭 45 m 세로 띠 — 20 m 트렌치가 격자에 딱 떨어지지 않아 가장자리가 남는다.
   const QByteArray area = squareWkb(200000.0, 450000.0, 200045.0, 450045.0);
@@ -395,7 +395,7 @@ void TestDemTrench::buildInArea_trimsEdgeTrenchesInsteadOfDropping() {
   const auto cells = TrenchGridGenerator::buildInArea(s, area);
   QVERIFY2(!cells.empty(), "트렌치가 나와야 한다");
 
-  // 잘린 트렌치가 생겨야 정상(전부 20 m면 가장자리를 버린 것).
+  // 잘린 트렌치가 없어야 정상(전부 20 m).
   bool sawTrimmed = false;
   for (const auto& c : cells) {
     QVERIFY2(c.width == 2.0, "폭은 2 m 고정");
@@ -408,7 +408,7 @@ void TestDemTrench::buildInArea_trimsEdgeTrenchesInsteadOfDropping() {
       QVERIFY2(pt.second >= 450000.0 - 1e-6 && pt.second <= 450045.0 + 1e-6, "y가 구역 안");
     }
   }
-  QVERIFY2(sawTrimmed, "가장자리 트렌치는 잘려서라도 남아야 한다");
+  QVERIFY2(!sawTrimmed, "가장자리 트렌치도 20 m 그대로여야 한다");
 
   // 세로 방향 덮임이 구역 위아래로 고르게 퍼져야 한다.
   double topMost = -1e300, botMost = 1e300;
@@ -418,7 +418,7 @@ void TestDemTrench::buildInArea_trimsEdgeTrenchesInsteadOfDropping() {
       botMost = std::min(botMost, pt.second);
     }
   QVERIFY2(botMost < 450004.0, "아래 가장자리까지 내려가야 한다");
-  QVERIFY2(topMost > 450041.0, "위 가장자리까지 올라가야 한다");
+  QVERIFY2(topMost > 450019.0, "온전한 첫 줄(0~20 m)이 깔린다");
 }
 
 // GDAL TMS 미니드라이버는 ${z} 표기를 쓰고, XYZ는 위가 원점이다.
@@ -496,7 +496,7 @@ void TestDemTrench::ratioFill_respectsGeometryContract_data() {
   QTest::newRow("rotated") << squareWkb(200000, 450000, 200100, 450100) << 10.0 << 45.0;
   QTest::newRow("concave") << wktWkb("POLYGON((0 0,100 0,100 30,30 30,30 100,0 100,0 0))") << 10.0 << 45.0;
   QTest::newRow("hole") << wktWkb("POLYGON((0 0,100 0,100 100,0 100,0 0),(30 30,30 70,70 70,70 30,30 30))") << 10.0 << 0.0;
-  QTest::newRow("small-sample") << squareWkb(0, 0, 10, 10) << 2.0 << 0.0;
+  QTest::newRow("small-sample") << squareWkb(0, 0, 25, 25) << 2.0 << 0.0;  // 20 m must fit (2026-10-28)
 }
 
 void TestDemTrench::ratioFill_respectsGeometryContract() {
@@ -531,9 +531,9 @@ void TestDemTrench::ratioFill_respectsGeometryContract() {
   const double unionArea = OGR_G_Area(OGRGeometry::ToHandle(united.get()));
   const double targetArea = OGR_G_Area(OGRGeometry::ToHandle(area.get())) * target / 100.0;
   QVERIFY2(std::abs(sum - unionArea) < 1e-6, "trenches must not overlap");
-  QVERIFY2(unionArea >= targetArea - 1e-6 && unionArea - targetArea < 20.0,  // whole 20·10 m: just over (2026-10-27)
+  QVERIFY2(std::abs(unionArea - targetArea) < 40.0,  // whole 20 m trenches: within one of it (2026-10-28)
            qPrintable(QStringLiteral("actual %1, target %2").arg(unionArea, 0, 'g', 17).arg(targetArea, 0, 'g', 17)));
-  QVERIFY(plan.ratioPct >= target - 1e-7);
+  QVERIFY(TrenchGridGenerator::meetsTarget(plan.cells, plan.areaM2, target));
   QVERIFY(std::abs(plan.length - maxLength) < 1e-7);
 }
 

@@ -16,12 +16,12 @@ namespace TrenchPlanCache {
 TrenchGridGenerator::RatioFill ratioPlan(const QByteArray& areaWkb, double targetPct,
                                          double width = 2.0, double azimuthDeg = 0.0,
                                          double armLength = 0.0, int armBend = 0,
-                                         const TrenchGridSnap::Grid* grid = nullptr);
+                                         const TrenchGridSnap::Grid* grid = nullptr, double trenchLength = 20.0);
 
 // True and *out filled when the plan is already known; never computes.
 bool lookup(const QByteArray& areaWkb, double targetPct, double width, double azimuthDeg,
             TrenchGridGenerator::RatioFill* out, double armLength = 0.0, int armBend = 0,
-            const TrenchGridSnap::Grid* grid = nullptr);
+            const TrenchGridSnap::Grid* grid = nullptr, double trenchLength = 20.0);
 
 // Number of real searches run so far (not cache hits). For tests and logs.
 int computeCount();

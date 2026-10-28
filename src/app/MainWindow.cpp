@@ -1941,7 +1941,7 @@ bool MainWindow::applyTrenchFromDialog() {
       // [pkg B2] F097: the plan the dialog preview already searched (cached), not a second search.
       const auto plan =
           TrenchPlanCache::ratioPlan(m_trenchDlg->areaWkb(), target, 2.0, sp.azimuthDeg, sp.armLength, sp.armBend,
-                                     m_trenchDlg->gridLock());
+                                     m_trenchDlg->gridLock(), sp.trenchLength);
       if (plan.cells.empty()) {
         notify(Notice::Warning, QStringLiteral("시굴격자"), plan.error);
         return false;

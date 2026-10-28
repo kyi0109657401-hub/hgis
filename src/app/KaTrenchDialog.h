@@ -86,7 +86,9 @@ private:
   QCheckBox* m_gridSnap = nullptr;
   bool m_gridAvailable = false;
   TrenchGridSnap::Grid m_grid;
-  QComboBox* m_size = nullptr;
+  // 트렌치 길이 체크란 20 / 15 / 10 m (사용자 요청 2026-10-28): the id is the length in metres.
+  class QButtonGroup* m_length = nullptr;
+  QWidget* m_lengthRow = nullptr;
   QDoubleSpinBox* m_balk = nullptr;
   QSpinBox* m_rows = nullptr;
   QSpinBox* m_cols = nullptr;

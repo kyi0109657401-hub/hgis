@@ -289,12 +289,12 @@ RatioFill buildForTargetRatio(const QByteArray& areaWkb, double targetPct, doubl
 
 }  // namespace TrenchLShape
 
-// Whole trenches reach the target, over by less than the smallest (TrenchGridGenerator.cpp is at its line limit).
+// Whole trenches: within less than the smallest of the target (TrenchGridGenerator.cpp is at its line limit).
 bool TrenchGridGenerator::meetsTarget(const std::vector<Cell>& cells, double areaM2, double targetPct) {
   if (targetPct <= 0.0) return !cells.empty();
   if (cells.empty() || !(areaM2 > 0.0) || !std::isfinite(areaM2)) return false;
   const double over = totalArea(cells) - areaM2 * targetPct / 100.0;
   double smallest = std::numeric_limits<double>::infinity();
   for (const Cell& cell : cells) smallest = std::min(smallest, cell.width * cell.length);
-  return over >= -std::max(1e-6, areaM2 * 1e-8) && over < smallest;
+  return std::abs(over) < smallest;
 }

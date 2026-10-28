@@ -116,13 +116,15 @@ struct RatioFill {
   double arm = 0.0;  // ㄱ·ㄴ자: longest actual arm; 0 for straight trenches
   QString error;  // nonempty when no valid plan can be made
 };
-// armLength > 0 lays whole ㄱ·ㄴ자 trenches of that arm, bent by armBend, instead: the fewest
-// reaching the target, so the total is just over it.
+// Straight trenches are all trenchLength (20, 15 or 10 m; 사용자 요청 2026-10-28): the count of whole
+// trenches nearest the target, never shortened. armLength > 0 lays whole ㄱ·ㄴ자 trenches of that arm,
+// bent by armBend, instead: the fewest reaching the target, so the total is just over it.
 RatioFill buildForTargetRatio(const QByteArray& areaWkb, double targetPct, double width = 2.0,
-                              double azimuthDeg = 0.0, double armLength = 0.0, int armBend = 0);
+                              double azimuthDeg = 0.0, double armLength = 0.0, int armBend = 0,
+                              double trenchLength = 20.0);
 
-// The cells cover targetPct of areaM2 as a plan must: at least the target, and over it by less than
-// the smallest trench (whole 20 m · 10 m or ㄱ·ㄴ자 trenches, never shortened). targetPct 0 = no target.
+// The cells cover targetPct of areaM2 as a plan of whole trenches must: within less than the smallest
+// trench of the target, over or under. targetPct 0 = no target.
 bool meetsTarget(const std::vector<Cell>& cells, double areaM2, double targetPct);
 
 // Sum of trench areas (w × len per cell, square metres).

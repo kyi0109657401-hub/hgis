@@ -132,17 +132,18 @@ void TestTrenchLShape::bendTurnsTheArmsFourWays() {
   QVERIFY(std::abs(cellPolygon(cells.front()).get_Area() - 56.0) < 1e-6);
 }
 
-// Whole trenches reach the target from above, by less than the smallest one (since 2026-10-27 straight
-// trenches are whole 20 m · 10 m too, no longer shortened to the exact target).
+// Whole trenches: within less than the smallest one of the target, either way (since 2026-10-28;
+// straight trenches are whole trenches of one length, no longer shortened to the exact target).
 void TestTrenchLShape::targetCheckIsExactForStraightAndJustOverForL() {
   const auto straight = TrenchGridGenerator::build(TrenchGridGenerator::Spec{});  // one 2 × 20 m = 40 ㎡
   QVERIFY(TrenchGridGenerator::meetsTarget(straight, 400.0, 10.0));
   QVERIFY(TrenchGridGenerator::meetsTarget(straight, 390.0, 10.0));   // 39 ㎡ asked: one trench, 1 ㎡ over
-  QVERIFY(!TrenchGridGenerator::meetsTarget(straight, 410.0, 10.0));  // under 10%
+  QVERIFY(TrenchGridGenerator::meetsTarget(straight, 410.0, 10.0));   // 1 ㎡ under is allowed
+  QVERIFY(!TrenchGridGenerator::meetsTarget(straight, 900.0, 10.0));  // 50 ㎡ under: one trench too few
   const auto ls = TrenchGridGenerator::build(lSpec());  // one L = 56 ㎡
   QVERIFY(TrenchGridGenerator::meetsTarget(ls, 560.0, 10.0));
   QVERIFY(TrenchGridGenerator::meetsTarget(ls, 300.0, 10.0));   // 30 ㎡ asked: 56 is the fewest whole Ls
-  QVERIFY(!TrenchGridGenerator::meetsTarget(ls, 600.0, 10.0));  // under 10%
+  QVERIFY(!TrenchGridGenerator::meetsTarget(ls, 1200.0, 10.0));  // 64 ㎡ under: one L too few
   auto two = lSpec();
   two.cols = 2;
   QVERIFY(!TrenchGridGenerator::meetsTarget(TrenchGridGenerator::build(two), 200.0, 10.0));  // 20 ㎡: one L would do

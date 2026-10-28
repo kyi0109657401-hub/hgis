@@ -3,6 +3,7 @@
 #include "KaTargetMeter.h"
 
 #include <QApplication>
+#include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
@@ -57,10 +58,6 @@ KaTrenchDialog::KaTrenchDialog(QWidget* parent) : QDialog(parent) {
 
   addShapeRows(form);  // 모양 (곧은 / ㄱ·ㄴ자) and 좌표격자에 맞추기, in KaTrenchDialogPlan.cpp
 
-  m_size = new QComboBox(this);
-  m_size->addItem(QStringLiteral("2 × 20 m"), 20);
-  m_size->addItem(QStringLiteral("2 × 10 m"), 10);
-  form->addRow(QStringLiteral("규격"), m_size);
 
   m_balk = new QDoubleSpinBox(this);
   m_balk->setRange(0, 200);
@@ -164,8 +161,6 @@ KaTrenchDialog::KaTrenchDialog(QWidget* parent) : QDialog(parent) {
   m_planTimer->setInterval(kPlanSettleMs);
   connect(m_planTimer, &QTimer::timeout, this, &KaTrenchDialog::refreshPlan);
 
-  connect(m_size, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
-          [this](int) { schedulePlan(); });
   connect(m_balk, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
           [this](double) { schedulePlan(); });
   connect(m_az, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
@@ -251,7 +246,7 @@ double KaTrenchDialog::effectiveAzimuth() const {
 TrenchGridGenerator::Spec KaTrenchDialog::spec() const {
   TrenchGridGenerator::Spec sp;
   sp.trenchWidth = 2.0;
-  sp.trenchLength = m_size->currentData().toDouble();
+  sp.trenchLength = m_length->checkedId();
   sp.armLength = m_shape->currentData().toInt() > 0 ? 15.0 : 0.0;
   sp.armBend = qMax(0, m_shape->currentData().toInt() - 1);
   sp.balkWidth = m_balk->value();

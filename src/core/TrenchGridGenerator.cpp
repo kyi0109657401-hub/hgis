@@ -112,9 +112,6 @@ std::vector<Cell> build(const Spec& spec) {
 
 namespace {
 
-// 시굴트렌치 표준 규격(사용자 요청 2026-10-27): 20 m × 2 m가 기본이고, 20 m가 안 들어가는 가장자리와
-// 목표를 넘는 나머지는 10 m × 2 m다. 그 밖의 길이(잘린 길이, 평균 길이)는 만들지 않는다.
-constexpr double kShortLen = 10.0;
 
 OGRGeometry* geomFromWkb(const QByteArray& wkb) {
   if (wkb.isEmpty())
@@ -144,21 +141,6 @@ QByteArray wkbFromGeom(OGRGeometry* g) {
   out.resize(static_cast<int>(g->WkbSize()));
   g->exportToWkb(wkbNDR, reinterpret_cast<unsigned char*>(out.data()));
   return out;
-}
-
-// 폴리곤/멀티폴리곤의 모든 꼭짓점을 훑는다(교차 결과의 국소 좌표 범위를 잴 때).
-template <typename F>
-void forEachVertex(const OGRGeometry* g, F&& fn) {
-  if (!g) return;
-  const OGRwkbGeometryType t = wkbFlatten(g->getGeometryType());
-  if (t == wkbPolygon) {
-    const auto* poly = g->toPolygon();
-    for (const OGRLinearRing* ring : *poly)
-      for (const OGRPoint& pt : *ring) fn(pt.getX(), pt.getY());
-  } else if (t == wkbMultiPolygon || t == wkbGeometryCollection) {
-    const auto* coll = g->toGeometryCollection();
-    for (const OGRGeometry* part : *coll) forEachVertex(part, fn);
-  }
 }
 
 }  // namespace
@@ -307,50 +289,14 @@ std::vector<Cell> buildInArea(const Spec& spec, const QByteArray& areaWkb, QStri
       const double v0 = vMin + j * stepV;
       for (long long i = 0; i < nu; ++i) {
         const double u0 = uMin + i * stepU;
-        const auto rectAt = [&](double vStart, double length) {
-          OGRLinearRing ring;
-          for (const auto& p : {world(u0, vStart), world(u0 + w, vStart), world(u0 + w, vStart + length),
-                                world(u0, vStart + length), world(u0, vStart)})
-            ring.addPoint(p.first, p.second);
-          OGRPolygon poly;
-          poly.addRing(&ring);
-          return poly;
-        };
-        const OGRPolygon poly = rectAt(v0, len);
-        double keepV0 = v0;
-        double keepLen = len;
-        if (!area->Contains(&poly)) {
-          // 경계에 걸치면 통째로 버리지 않는다. 그러면 가장자리가 비어 배치가 고르지 않다.
-          // 길이를 아무렇게나 자르지 않고 10 m 트렌치를 그 칸 안 앞·가운데·뒤에 넣어 본다.
-          if (!(len > kShortLen) || !area->Intersects(&poly))
-            continue;
-          Geometry inter(area->Intersection(&poly));
-          if (!inter || inter->IsEmpty()) {
-            continue;
-          }
-          double loV = 1e300, hiV = -1e300;
-          forEachVertex(inter.get(), [&](double wx, double wy) {
-            const double lv = toLocal(wx, wy).second;
-            loV = std::min(loV, lv);
-            hiV = std::max(hiV, lv);
-          });
-          loV = std::max(loV, v0);
-          hiV = std::min(hiV, v0 + len);
-          bool fits = false;
-          const bool topCut = hiV < v0 + len - 1e-9;  // hug the cut edge so the boundary stays covered
-          for (double start : {topCut ? hiV - kShortLen : loV, (loV + hiV - kShortLen) * 0.5,
-                               topCut ? loV : hiV - kShortLen}) {
-            start = std::clamp(start, v0, v0 + len - kShortLen);
-            const OGRPolygon piece = rectAt(start, kShortLen);
-            if ((fits = area->Contains(&piece))) {
-              keepV0 = start;
-              break;
-            }
-          }
-          if (!fits)
-            continue;
-          keepLen = kShortLen;
-        }
+        OGRLinearRing ring;
+        for (const auto& p : {world(u0, v0), world(u0 + w, v0), world(u0 + w, v0 + len), world(u0, v0 + len), world(u0, v0)})
+          ring.addPoint(p.first, p.second);
+        OGRPolygon poly;
+        poly.addRing(&ring);
+        // 고른 길이 하나만(사용자 요청 2026-10-28): 다 들어가지 않는 칸은 비운다. 잘라 넣거나 다른 길이로 채우지 않는다.
+        if (!area->Contains(&poly)) continue;
+        const double keepV0 = v0, keepLen = len;
         const auto k0 = world(u0, keepV0);
         Cell cell;
         cell.name = spec.namePrefix + QString::number(n++);
@@ -424,14 +370,14 @@ SlopeAspect upslopeAspect(const std::vector<ElevSample>& samples, double minSlop
 }
 
 RatioFill buildForTargetRatio(const QByteArray& areaWkb, double targetPct, double width,
-                              double azimuthDeg, double armLength, int armBend) {
+                              double azimuthDeg, double armLength, int armBend, double trenchLength) {
   if (armLength != 0.0)
     return TrenchLShape::buildForTargetRatio(areaWkb, targetPct, width, azimuthDeg, armLength, armBend);
   RatioFill best;
-  if (areaWkb.isEmpty() || !validDimensions(width, kMaxLength) ||
+  if (areaWkb.isEmpty() || !validDimensions(width, trenchLength) ||
       !std::isfinite(targetPct) || targetPct <= 0.0 || targetPct > 100.0 ||
       !std::isfinite(azimuthDeg)) {
-    best.error = QStringLiteral("폭은 0 초과 2 m 이하, 목표 비율은 0 초과 100% 이하의 유효한 값이어야 합니다.");
+    best.error = QStringLiteral("폭은 2 m 이하, 길이는 20 m 이하, 목표 비율은 0 초과 100% 이하의 유효한 값이어야 합니다.");
     return best;
   }
 
@@ -453,67 +399,44 @@ RatioFill buildForTargetRatio(const QByteArray& areaWkb, double targetPct, doubl
   s.azimuthDeg = azimuthDeg;
   s.namePrefix = targetPct <= 3.5 ? QStringLiteral("Sp-") : QStringLiteral("Tr-");
 
-  double bestArea = std::numeric_limits<double>::infinity();
-  long long bestTens = std::numeric_limits<long long>::max();
-  for (double len : {kMaxLength}) {  // 20 m, with 10 m at the edges (buildInArea)
-    s.trenchLength = len;
-    for (double balk = 2.0; balk <= 120.0; balk += 2.0) {
-      s.balkWidth = balk;
-      auto cells = buildInArea(s, areaWkb);
-      if (cells.empty())
-        continue;
-      // The candidate that, once its surplus goes 10 m at a time (below), keeps the most 20 m trenches.
-      const double candidateArea = totalArea(cells);
-      long long tens = -static_cast<long long>(std::floor((candidateArea - targetArea) / (width * kShortLen) + 1e-9));
-      for (const Cell& cell : cells) tens += cell.length > kShortLen + 1e-9 ? 0 : 1;
-      tens = std::abs(tens);  // 10 m ones left after dropping, or 20 m ones shortened
-      if (candidateArea >= targetArea && tens < bestTens) {
-        bestTens = tens;
-        bestArea = candidateArea;
-        best.cells = std::move(cells);
-        best.balk = balk;
-        best.azimuthDeg = azimuthDeg;
-      }
-      if (bestTens == 0) break;  // only 20 m trenches, none over
+  // One length only (사용자 요청 2026-10-28), never shortened to the target. Each balk gives a grid of
+  // whole trenches; the trenches it holds beyond the target are left out, spread over the numbering,
+  // so the plan is the count nearest the target (within half a trench when the grid has enough). The
+  // most regular of the grids within half a trench wins: the fewest left out, then the nearest.
+  s.trenchLength = trenchLength;
+  const double piece = width * trenchLength;
+  double bestMiss = std::numeric_limits<double>::infinity();
+  size_t bestDrop = std::numeric_limits<size_t>::max();
+  bool bestNear = false;
+  for (double balk = 1.0; balk <= 120.0; balk += 1.0) {
+    s.balkWidth = balk;
+    auto cells = buildInArea(s, areaWkb);
+    if (cells.empty()) continue;
+    const double over = totalArea(cells) - targetArea;
+    const auto drop = std::min(cells.size() - 1, static_cast<size_t>(std::max(0.0, std::floor(over / piece + 0.5))));
+    const double miss = std::abs(over - double(drop) * piece);
+    const bool near = miss <= piece * 0.5 + 1e-9;
+    const bool nearer = miss < bestMiss - 1e-9;
+    if ((near && !bestNear) || (near == bestNear && (near ? drop < bestDrop || (drop == bestDrop && nearer) : nearer))) {
+      bestNear = near;
+      bestMiss = miss;
+      bestDrop = drop;
+      best.cells = std::move(cells);
+      best.balk = balk;
+      best.azimuthDeg = azimuthDeg;
     }
-    if (bestTens == 0) break;
   }
   if (best.cells.empty()) {
-    best.error = QStringLiteral("현재 구역과 방향에서 폭 %1 m·길이 20 m·10 m 트렌치로 목표 %2%를 배치할 수 없습니다. 기존 격자는 유지됩니다.")
-                     .arg(width).arg(targetPct);
+    best.error = QStringLiteral("현재 구역과 방향에서 %1 m × %2 m 트렌치가 들어가지 않습니다. 더 짧은 길이(10 m)를 고르거나 "
+                                "방향을 바꿔 보세요. 기존 격자는 유지됩니다.").arg(trenchLength).arg(width);
     return best;
   }
-
-  // Lengths are never averaged down to the target (the old 9.84 m trenches). What the plan holds
-  // beyond it goes 10 m at a time, spread over the numbering: 10 m ones are left out, then 20 m
-  // trenches become 10 m (the middle of the old one, so it stays inside and apart). Over < 20 ㎡.
-  auto surplus = static_cast<size_t>(std::floor((bestArea - targetArea) / (width * kShortLen) + 1e-9));
-  for (const bool shorten : {false, true}) {
-    std::vector<size_t> picks;
-    for (size_t i = 0; i < best.cells.size(); ++i)
-      if ((best.cells[i].length > kShortLen + 1e-9) == shorten) picks.push_back(i);
-    const size_t take = std::min(surplus, picks.size());
-    std::vector<bool> drop(best.cells.size(), false);
-    for (size_t k = 0; k < take; ++k) {
-      Cell& cell = best.cells[picks[(2 * k + 1) * picks.size() / (2 * take)]];
-      if (!shorten) {
-        drop[&cell - best.cells.data()] = true;
-        continue;
-      }
-      const auto r = cell.ring;
-      const double f = (1.0 - kShortLen / cell.length) * 0.5;
-      const double dx = (r[3].first - r[0].first) * f, dy = (r[3].second - r[0].second) * f;
-      cell.ring = {{r[0].first + dx, r[0].second + dy}, {r[1].first + dx, r[1].second + dy},
-                   {r[2].first - dx, r[2].second - dy}, {r[3].first - dx, r[3].second - dy},
-                   {r[0].first + dx, r[0].second + dy}};
-      cell.length = kShortLen;
-    }
-    std::vector<Cell> kept;
-    for (size_t i = 0; i < best.cells.size(); ++i)
-      if (!drop[i]) kept.push_back(best.cells[i]);
-    best.cells = std::move(kept);
-    surplus -= take;
-  }
+  std::vector<bool> left(best.cells.size(), false);
+  for (size_t k = 0; k < bestDrop; ++k) left[(2 * k + 1) * best.cells.size() / (2 * bestDrop)] = true;
+  std::vector<Cell> kept;
+  for (size_t i = 0; i < best.cells.size(); ++i)
+    if (!left[i]) kept.push_back(best.cells[i]);
+  best.cells = std::move(kept);
   TrenchTerrain::numberFromHighSide(best.cells, azimuthDeg, s.namePrefix);
   for (const Cell& cell : best.cells) best.length = std::max(best.length, cell.length);
   if (!cellsValid(best.cells, &best.error)) best.cells.clear();

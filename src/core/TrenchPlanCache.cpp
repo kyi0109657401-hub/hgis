@@ -20,11 +20,13 @@ struct Key {
   double azimuthDeg = 0.0;
   double armLength = 0.0;  // ㄱ·ㄴ자 plans are not the straight plan for the same area
   int armBend = 0;
+  double trenchLength = 20.0;  // straight trenches: one length (20, 15 or 10 m)
   bool onGrid = false;  // 「좌표격자에 맞추기」: the coordinate grid below, not azimuthDeg
   TrenchGridSnap::Grid grid;
   bool operator==(const Key& other) const {
     return areaHash == other.areaHash && targetPct == other.targetPct && width == other.width &&
            azimuthDeg == other.azimuthDeg && armLength == other.armLength && armBend == other.armBend &&
+           trenchLength == other.trenchLength &&
            onGrid == other.onGrid && grid.originX == other.grid.originX && grid.originY == other.grid.originY &&
            grid.rotationDeg == other.grid.rotationDeg && grid.step == other.grid.step;
   }
@@ -49,15 +51,18 @@ QList<Entry>& entries() {
 std::atomic<int> g_computeCount{0};
 
 Key makeKey(const QByteArray& areaWkb, double targetPct, double width, double azimuthDeg, double armLength,
-            int armBend, const TrenchGridSnap::Grid* grid) {
+            int armBend, const TrenchGridSnap::Grid* grid, double trenchLength) {
   return Key{QCryptographicHash::hash(areaWkb, QCryptographicHash::Sha1), targetPct, width,
-             grid ? 0.0 : azimuthDeg, armLength, armBend, grid != nullptr, grid ? *grid : TrenchGridSnap::Grid{}};
+             grid ? 0.0 : azimuthDeg, armLength, armBend, trenchLength, grid != nullptr,
+             grid ? *grid : TrenchGridSnap::Grid{}};
 }
 
 TrenchGridGenerator::RatioFill compute(const QByteArray& areaWkb, double targetPct, double width, double azimuthDeg,
-                                       double armLength, int armBend, const TrenchGridSnap::Grid* grid) {
+                                       double armLength, int armBend, const TrenchGridSnap::Grid* grid,
+                                       double trenchLength) {
   if (grid) return TrenchGridSnap::buildForTargetRatio(areaWkb, targetPct, width, armLength, armBend, *grid);
-  return TrenchGridGenerator::buildForTargetRatio(areaWkb, targetPct, width, azimuthDeg, armLength, armBend);
+  return TrenchGridGenerator::buildForTargetRatio(areaWkb, targetPct, width, azimuthDeg, armLength, armBend,
+                                                  trenchLength);
 }
 
 bool find(const Key& key, TrenchGridGenerator::RatioFill* out) {
@@ -75,20 +80,22 @@ bool find(const Key& key, TrenchGridGenerator::RatioFill* out) {
 }  // namespace
 
 bool lookup(const QByteArray& areaWkb, double targetPct, double width, double azimuthDeg,
-            TrenchGridGenerator::RatioFill* out, double armLength, int armBend, const TrenchGridSnap::Grid* grid) {
+            TrenchGridGenerator::RatioFill* out, double armLength, int armBend, const TrenchGridSnap::Grid* grid,
+            double trenchLength) {
   if (areaWkb.isEmpty()) return false;
-  return find(makeKey(areaWkb, targetPct, width, azimuthDeg, armLength, armBend, grid), out);
+  return find(makeKey(areaWkb, targetPct, width, azimuthDeg, armLength, armBend, grid, trenchLength), out);
 }
 
 TrenchGridGenerator::RatioFill ratioPlan(const QByteArray& areaWkb, double targetPct, double width,
                                          double azimuthDeg, double armLength, int armBend,
-                                         const TrenchGridSnap::Grid* grid) {
-  if (areaWkb.isEmpty()) return compute(areaWkb, targetPct, width, azimuthDeg, armLength, armBend, grid);
-  const Key key = makeKey(areaWkb, targetPct, width, azimuthDeg, armLength, armBend, grid);
+                                         const TrenchGridSnap::Grid* grid, double trenchLength) {
+  if (areaWkb.isEmpty())
+    return compute(areaWkb, targetPct, width, azimuthDeg, armLength, armBend, grid, trenchLength);
+  const Key key = makeKey(areaWkb, targetPct, width, azimuthDeg, armLength, armBend, grid, trenchLength);
   TrenchGridGenerator::RatioFill plan;
   if (find(key, &plan)) return plan;
   // Computed outside the lock: two threads asking for the same new plan both search once.
-  plan = compute(areaWkb, targetPct, width, azimuthDeg, armLength, armBend, grid);
+  plan = compute(areaWkb, targetPct, width, azimuthDeg, armLength, armBend, grid, trenchLength);
   ++g_computeCount;
   QMutexLocker lock(&cacheMutex());
   QList<Entry>& list = entries();

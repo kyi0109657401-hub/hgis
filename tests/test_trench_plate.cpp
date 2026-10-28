@@ -4,6 +4,7 @@
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QRadioButton>
 #include <QDoubleSpinBox>
 #include <QLabel>
 
@@ -111,15 +112,21 @@ private slots:
     QVERIFY(!lock->isEnabled() && !dialog.gridLock());
   }
 
-  // 표준 규격 (사용자 요청 2026-10-27): the 10% plan says how many 20 m and 10 m trenches it lays, and no length
-  // of its own; 1000 ㎡ of a 100 m square is 23 × 20 m + 4 × 10 m.
+  // 트렌치 길이 체크란 (사용자 요청 2026-10-28): the 10% plan is made of the checked length only, and the summary
+  // says so; 1000 ㎡ of a 100 m square is 25 × 20 m, or 50 × 10 m.
   void ratioSummaryCountsTwentyAndTenMetreTrenches() {
     KaTrenchDialog dialog;
     dialog.setArea(squareWkb(100), 10000.0);
     QTRY_VERIFY_WITH_TIMEOUT(!dialog.planPending(), 20000);
     const QString summary = dialog.findChild<QLabel*>(QStringLiteral("trenchSummary"))->text();
-    QVERIFY2(summary.contains(QStringLiteral("20 m 23개 · 10 m 4개")) && summary.contains(QStringLiteral("비율 10.0%")),
+    QVERIFY2(summary.contains(QStringLiteral("20 m 트렌치 25개")) && summary.contains(QStringLiteral("비율 10.0%")),
              qPrintable(summary));
+    auto* ten = dialog.findChild<QWidget*>(QStringLiteral("trenchLength"))->findChildren<QRadioButton*>().last();
+    ten->click();
+    QCOMPARE(dialog.spec().trenchLength, 10.0);
+    QTRY_VERIFY_WITH_TIMEOUT(!dialog.planPending(), 20000);
+    const QString tens = dialog.findChild<QLabel*>(QStringLiteral("trenchSummary"))->text();
+    QVERIFY2(tens.contains(QStringLiteral("10 m 트렌치 50개")), qPrintable(tens));
   }
 
   void paperWindowCarriesTheMeterAndTheDial() {

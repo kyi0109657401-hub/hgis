@@ -4,7 +4,10 @@
 #include "KaAzimuthDial.h"
 #include "core/TrenchPlanCache.h"
 
+#include <QButtonGroup>
 #include <QCheckBox>
+#include <QHBoxLayout>
+#include <QRadioButton>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
@@ -32,6 +35,23 @@ void KaTrenchDialog::addShapeRows(QFormLayout* form) {
   m_shape->setToolTip(QStringLiteral("ㄱ·ㄴ자는 팔 15 m 그대로 구역 안에 온전히 들어가는 것만 놓아, 비율이 목표를 조금 넘습니다."));
   form->addRow(QStringLiteral("모양"), m_shape);
   connect(m_shape, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) { schedulePlan(); });
+
+  // 트렌치 길이 (사용자 요청 2026-10-28): 고른 길이 하나로만 깐다. 섞거나 잘라 넣거나 평균 길이로 줄이지 않는다.
+  m_lengthRow = new QWidget(this);
+  m_lengthRow->setObjectName(QStringLiteral("trenchLength"));
+  auto* lengthLay = new QHBoxLayout(m_lengthRow);
+  lengthLay->setContentsMargins(0, 0, 0, 0);
+  m_length = new QButtonGroup(m_lengthRow);
+  for (int metres : {20, 15, 10}) {
+    auto* button = new QRadioButton(QStringLiteral("%1 m").arg(metres), m_lengthRow);
+    button->setToolTip(QStringLiteral("폭 2 m · 길이 %1 m 트렌치로만 조사구역 안에 깝니다.").arg(metres));
+    button->setChecked(metres == 20);
+    m_length->addButton(button, metres);
+    lengthLay->addWidget(button);
+  }
+  lengthLay->addStretch(1);
+  form->addRow(QStringLiteral("트렌치 길이"), m_lengthRow);
+  connect(m_length, &QButtonGroup::idToggled, this, [this](int, bool on) { if (on) schedulePlan(); });
 
   // 「좌표격자에 맞추기」 (사용자 요청 2026-10-20): 바깥 모서리를 좌표격자 교점에, 방향을 좌표격자 방향에 둔다.
   m_gridSnap = new QCheckBox(QStringLiteral("좌표격자에 맞추기"), this);
@@ -66,7 +86,7 @@ void KaTrenchDialog::refreshRows() {
   if (auto* form = qobject_cast<QFormLayout*>(layout())) {
     form->setRowVisible(m_rows, !fill);
     form->setRowVisible(m_cols, !fill);
-    form->setRowVisible(m_size, !ratio && m_shape->currentData().toInt() == 0);
+    form->setRowVisible(m_lengthRow, m_shape->currentData().toInt() == 0);
     form->setRowVisible(m_balk, !ratio);
     form->setRowVisible(m_prefix, !ratio);
   }
@@ -106,10 +126,11 @@ void KaTrenchDialog::refreshPlan() {
     const double az = effectiveAzimuth();
     const double arm = spec().armLength;
     const int bend = spec().armBend;
+    const double length = spec().trenchLength;
     const bool onGrid = gridLock() != nullptr;
     const TrenchGridSnap::Grid grid = m_grid;
     TrenchGridGenerator::RatioFill known;
-    if (TrenchPlanCache::lookup(area, target, 2.0, az, &known, arm, bend, onGrid ? &grid : nullptr)) {
+    if (TrenchPlanCache::lookup(area, target, 2.0, az, &known, arm, bend, onGrid ? &grid : nullptr, length)) {
       m_planPending = false;
       showRatioPlan(known, az);
       return;
@@ -118,9 +139,9 @@ void KaTrenchDialog::refreshPlan() {
     setSummaryTone("plain");
     m_ratio->setText(QStringLiteral("배치를 계산하는 중입니다…"));
     // The pool is drained in the destructor, so `this` outlives the task.
-    m_planPool->start([this, seq, area, target, az, arm, bend, onGrid, grid]() {
+    m_planPool->start([this, seq, area, target, az, arm, bend, onGrid, grid, length]() {
       const TrenchGridGenerator::RatioFill plan =
-          TrenchPlanCache::ratioPlan(area, target, 2.0, az, arm, bend, onGrid ? &grid : nullptr);
+          TrenchPlanCache::ratioPlan(area, target, 2.0, az, arm, bend, onGrid ? &grid : nullptr, length);
       QMetaObject::invokeMethod(this, [this, seq, plan, az]() {
         if (seq != m_planSeq) return;
         m_planPending = false;
@@ -157,18 +178,14 @@ void KaTrenchDialog::showRatioPlan(const TrenchGridGenerator::RatioFill& plan, d
     m_balk->setValue(plan.balk);
   }
   setSummaryTone("ok");
-  // 표준 규격 (사용자 요청 2026-10-27): straight trenches are 20 m or 10 m; say how many of each.
-  int twenty = 0;
-  for (const auto& cell : plan.cells) twenty += cell.arm == 0.0 && cell.length > 15.0 ? 1 : 0;
-  const QString straight = QStringLiteral("20 m %1개 · 10 m %2개").arg(twenty).arg(int(plan.cells.size()) - twenty);
   const QString shape = plan.arm > 0.0
                             ? QStringLiteral("ㄱ·ㄴ자 트렌치 %2개 · 폭 2 m · 팔 %3 m + %3 m · 둑 %4 m 이상")
-                            : QStringLiteral("트렌치 %2개(%3) · 폭 2 m · 둑 %4 m");
+                            : QStringLiteral("%3 m 트렌치 %2개 · 폭 2 m · 둑 %4 m");
   m_ratio->setText(
       (QStringLiteral("%1 · ") + shape + QStringLiteral(" · 총 %5㎡ · 비율 %6% (목표 %7%) · 방위 %8°"))
           .arg(surveyKind() == SurveyKind::Trial ? QStringLiteral("시굴조사") : QStringLiteral("표본조사"))
           .arg(plan.cells.size())
-          .arg(plan.arm > 0.0 ? QLocale().toString(plan.arm, 'g', 4) : straight)
+          .arg(QLocale().toString(plan.arm > 0.0 ? plan.arm : plan.length, 'g', 4))
           .arg(QLocale().toString(plan.balk, 'f', 0))
           .arg(QLocale().toString(TrenchGridGenerator::totalArea(plan.cells), 'f', 2))
           .arg(QLocale().toString(plan.ratioPct, 'f', 1))
