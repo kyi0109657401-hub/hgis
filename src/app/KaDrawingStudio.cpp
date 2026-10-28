@@ -504,10 +504,12 @@ void KaDrawingStudio::resetPaper(double widthMm, double heightMm, bool preserveE
   map->invalidateCache();
   map->refresh();
 
-  // 4. 부속 장식 요소 (방위표, 축척자, 범례, 축척 라벨, 좌표계 라벨 등) 상대 이동 및 클램핑
+  // 4. 범례·표제란 등 나머지 항목은 상대 이동 뒤 용지 안으로. 용지 자체는 건드리지 않고,
+  //    아래 띠 장식 넷(축척자·축척 글·좌표계·방위)은 6에서 새 용지의 정한 자리에 다시 놓는다
+  //    (2026-10-28 현장: 용지를 바꾸면 엉뚱한 곳으로 가던 것. 「일률적으로 자리를 잡게」).
   for (QGraphicsItem* gi : ly->items()) {
     auto* item = dynamic_cast<QgsLayoutItem*>(gi);
-    if (!item || item == map) continue;
+    if (!item || item == map || dynamic_cast<QgsLayoutItemPage*>(item) || isSheetDecoration(item)) continue;
 
     const QRectF itemBox = itemPaperRect(item);
     const QPointF pos = itemBox.topLeft();
@@ -526,8 +528,8 @@ void KaDrawingStudio::resetPaper(double widthMm, double heightMm, bool preserveE
     }
 
     // 용지 영역 벗어남 방지 (클램핑)
-    const double maxX = std::max(0.0, m_paperW - sz.width() - 4.0);
-    const double maxY = std::max(0.0, m_paperH - sz.height() - 4.0);
+    const double maxX = std::max(4.0, m_paperW - sz.width() - 4.0);
+    const double maxY = std::max(4.0, m_paperH - sz.height() - 4.0);
     newX = std::clamp(newX, 4.0, maxX);
     newY = std::clamp(newY, 4.0, maxY);
 
@@ -539,11 +541,11 @@ void KaDrawingStudio::resetPaper(double widthMm, double heightMm, bool preserveE
     relayoutCoordCallouts();
   }
 
-  // 6. 뷰 갱신
+  // 6. 장식을 새 용지의 띠에 놓고 뷰 갱신
   m_paperFitPending = true;
   zoomPaperVisible();
   relinkDecorations();
-  syncScaleDecorations();
+  replaceSheetChrome();
   ly->refresh();
 
   if (m_status) {
@@ -2707,6 +2709,16 @@ void KaDrawingStudio::ensureStandardDecorations() {
   relinkDecorations();
   applyStandardChromePositions();
   syncSheetTiles();
+}
+
+// 용지를 바꿀 때: 축척자·축척 글·좌표계·방위를 어디에 있었든 지도 아래 띠의 정한 자리로 되돌린다.
+void KaDrawingStudio::replaceSheetChrome() {
+  auto* ly = layout();
+  if (!ly) return;
+  for (const char* id : {kIdScaleBar, kIdScale, kIdCrs, kIdNorth})
+    if (auto* item = findItemById(ly, id))
+      item->setCustomProperty(QStringLiteral("ka_hgis/chrome_placed"), false);
+  applyStandardChromePositions();
 }
 
 void KaDrawingStudio::applyStandardChromePositions() {

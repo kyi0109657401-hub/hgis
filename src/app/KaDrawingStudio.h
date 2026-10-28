@@ -183,6 +183,7 @@ private:
   void relinkDecorations();
   void ensureStandardDecorations();
   void applyStandardChromePositions();
+  void replaceSheetChrome();
   void snapMapScaleToNice();
   void applyNiceScaleBar(QgsLayoutItemScaleBar* sb);
   QRectF defaultItemRect(const char* id) const;

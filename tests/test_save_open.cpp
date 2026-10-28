@@ -2122,6 +2122,102 @@ private slots:
     QCOMPARE(grown.width(), 317.0);
     QCOMPARE(grown.height(), 220.0);
   }
+  // 2026-10-28 현장: 조판에서 용지를 A4·A3로 바꾸면 아래 축척자·축척 글·방위가 엉뚱한 곳으로 갔다.
+  // 용지를 바꾸면 네 장식은 어디에 있었든 새 용지의 지도 아래 띠(standardSheetChrome) 자리로 돌아온다.
+  void drawingStudio_paperChangePutsChromeBackInTheStandardStrip() {
+    QgsProject project;
+    project.setCrs(QgsCoordinateReferenceSystem(QStringLiteral("EPSG:5187")));
+    QgsMapCanvas canvas;
+    canvas.setRenderFlag(false);
+    canvas.setDestinationCrs(project.crs());
+    canvas.setExtent(QgsRectangle(190000, 560000, 191000, 561000));
+    KaDrawingStudio studio(&project, &canvas, 210., 297.);
+    studio.setAttribute(Qt::WA_DontShowOnScreen);
+    studio.show();
+    QCoreApplication::processEvents();
+    QTest::qWait(200);
+    auto* view = studio.findChild<QgsLayoutView*>();
+    QVERIFY(view && view->currentLayout());
+    auto* ly = view->currentLayout();
+    auto* map = dynamic_cast<QgsLayoutItemMap*>(ly->itemById(QStringLiteral("ka_map")));
+    QVERIFY(map);
+    auto rectOf = [](QgsLayoutItem* item) { return QRectF(item->pos(), item->rect().size()); };
+    auto pageMm = [ly]() {
+      auto* page = ly->pageCollection()->page(0);
+      const QgsLayoutSize size = ly->renderContext().measurementConverter().convert(
+          page->pageSize(), Qgis::LayoutUnit::Millimeters);
+      return QSizeF(size.width(), size.height());
+    };
+    // 네 장식이 지도 아래 띠의 정한 자리에 있는가. 축척자 너비는 축척에 따라 다르니 왼쪽·위만 본다.
+    auto inStandardStrip = [&](const char* when) -> bool {
+      const QSizeF paper = pageMm();
+      const auto chrome =
+          LayoutService::standardSheetChrome(QRectF(0.0, 0.0, paper.width(), paper.height()), rectOf(map));
+      auto* bar = ly->itemById(QStringLiteral("ka_scalebar"));
+      auto* label = ly->itemById(QStringLiteral("ka_scale"));
+      auto* crs = ly->itemById(QStringLiteral("ka_crs"));
+      auto* north = ly->itemById(QStringLiteral("ka_north"));
+      if (!bar || !label || !crs || !north) {
+        qWarning() << when << "장식이 없다" << (bar != nullptr) << (label != nullptr) << (crs != nullptr) << (north != nullptr);
+        return false;
+      }
+      auto close = [](double a, double b) { return qAbs(a - b) < 0.6; };
+      const QRectF b = rectOf(bar), l = rectOf(label), c = rectOf(crs), n = rectOf(north);
+      bool ok = true;
+      if (!close(b.left(), chrome.scaleBar.left()) || !close(b.top(), chrome.scaleBar.top())) {
+        qWarning() << when << "축척자" << b << "기대" << chrome.scaleBar;
+        ok = false;
+      }
+      if (!close(l.left(), b.left()) || !close(l.top(), b.bottom() + 2.5)) {
+        qWarning() << when << "축척 글" << l << "축척자" << b;
+        ok = false;
+      }
+      if (!close(c.left(), chrome.crs.left()) || !close(c.top(), chrome.crs.top())) {
+        qWarning() << when << "좌표계" << c << "기대" << chrome.crs;
+        ok = false;
+      }
+      if (!close(n.left(), chrome.north.left()) || !close(n.top(), chrome.north.top())) {
+        qWarning() << when << "방위" << n << "기대" << chrome.north;
+        ok = false;
+      }
+      if (b.right() > c.left() - 1.0) {
+        qWarning() << when << "축척자가 좌표계 글과 겹친다" << b << c;
+        ok = false;
+      }
+      return ok;
+    };
+    QCOMPARE(pageMm(), QSizeF(210.0, 297.0));
+    QVERIFY(inStandardStrip("A4 세로 처음"));
+
+    // 장식을 엉뚱한 곳에 둔 채 용지를 A3 가로로 바꾼다.
+    ly->itemById(QStringLiteral("ka_north"))->attemptSetSceneRect(QRectF(30.0, 150.0, 20.0, 20.0));
+    auto* barItem = ly->itemById(QStringLiteral("ka_scalebar"));
+    barItem->attemptSetSceneRect(QRectF(80.0, 120.0, barItem->rect().width(), barItem->rect().height()));
+    studio.resetPaper(420., 297.);
+    QCoreApplication::processEvents();
+    qInfo() << "A3 가로로 바꾼 뒤 지도" << map->pos() << map->rect().size() << "용지" << ly->pageCollection()->page(0)->pos();
+    QCOMPARE(pageMm(), QSizeF(420.0, 297.0));
+    QVERIFY2(QLineF(ly->pageCollection()->page(0)->pos(), QPointF(0.0, 0.0)).length() < 0.01,
+             "용지 자체는 제자리(0,0)에 있어야 한다");
+    QVERIFY2(qAbs(map->pos().x() - 10.0) < 0.6 && qAbs(map->pos().y() - 10.0) < 0.6, "지도 칸은 위·왼쪽 10 mm");
+    QVERIFY2(qAbs(map->rect().width() - 400.0) < 0.6, "지도 칸 폭은 용지 너비에서 양쪽 10 mm를 뺀 것");
+    QVERIFY(inStandardStrip("A3 가로로 바꾼 뒤"));
+    // 축척 동기화 타이머가 돈 뒤에도 그대로다.
+    QTest::qWait(600);
+    QVERIFY(inStandardStrip("A3 가로, 타이머 뒤"));
+
+    // 다시 A4 세로, 그리고 A3 세로: 어느 크기로 바꿔도 같은 자리다.
+    studio.resetPaper(210., 297.);
+    QCoreApplication::processEvents();
+    QCOMPARE(pageMm(), QSizeF(210.0, 297.0));
+    QVERIFY(inStandardStrip("A4 세로로 되돌린 뒤"));
+    studio.resetPaper(297., 420.);
+    QCoreApplication::processEvents();
+    QCOMPARE(pageMm(), QSizeF(297.0, 420.0));
+    QVERIFY2(QLineF(ly->pageCollection()->page(0)->pos(), QPointF(0.0, 0.0)).length() < 0.01,
+             "용지 자체는 제자리(0,0)에 있어야 한다");
+    QVERIFY(inStandardStrip("A3 세로로 바꾼 뒤"));
+  }
   void drawingStudio_heritageRefreshRequestsCoalesceAndReuseOnRevisit() {
     constexpr int categoryCount = 200;
     QgsProject project;

@@ -77,7 +77,7 @@
 564 tests/test_perf.cpp
 400 tests/test_polygon_erase.cpp
 802 tests/test_reference_download.cpp
-6330 tests/test_save_open.cpp
+6426 tests/test_save_open.cpp
 1099 tests/test_storage_safety.cpp
 327 tests/test_submit_package.cpp
 338 tests/test_survey_contour.cpp

@@ -1845,6 +1845,7 @@ if(KA_HGIS_BUILD_TESTS)
     drawingStudio_legendStaysWhereTheUserPutsItOutsideThePaper
     drawingStudio_northArrowRendersOnOpen
     drawingStudio_fieldPageGrowsA4LandscapeByOneCentimetre
+    drawingStudio_paperChangePutsChromeBackInTheStandardStrip
     drawingStudio_heritageRefreshRequestsCoalesceAndReuseOnRevisit
     drawingStudioAboveLabelsMapDrawsGeometryWithoutDuplicateNumberLabels
     drawingStudio_centerLayerMovesAboveLabelsMapToo
