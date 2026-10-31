@@ -423,16 +423,19 @@ private slots:
     QgsProject project;
     auto* root = project.layerTreeRoot();
     auto* group = root->addGroup(QStringLiteral("참조 지도"));
-    auto* layer = new QgsVectorLayer(QStringLiteral("Polygon?crs=EPSG:5186"),
-                                     QStringLiteral("토양도"), QStringLiteral("memory"));
-    auto* other = new QgsVectorLayer(QStringLiteral("Polygon?crs=EPSG:5186"),
-                                     QStringLiteral("지질도"), QStringLiteral("memory"));
+    auto* layer = new QgsVectorLayer(QStringLiteral("Polygon?crs=EPSG:5186"), QStringLiteral("토양도"), QStringLiteral("memory"));
+    auto* other = new QgsVectorLayer(QStringLiteral("Polygon?crs=EPSG:5186"), QStringLiteral("지질도"), QStringLiteral("memory"));
+    auto* sub = group->addGroup(QStringLiteral("지정유산"));
+    auto* subLayer = new QgsVectorLayer(QStringLiteral("Polygon?crs=EPSG:5186"), QStringLiteral("국가지정유산"), QStringLiteral("memory"));
     QVERIFY(layer->isValid());
     QVERIFY(other->isValid());
+    QVERIFY(subLayer->isValid());
     project.addMapLayer(layer, false);
     project.addMapLayer(other, false);
+    project.addMapLayer(subLayer, false);
     auto* node = group->addLayer(layer);
     auto* otherNode = group->addLayer(other);
+    auto* subNode = sub->addLayer(subLayer);
     QVERIFY(node->isVisible());
     root->children().first()->setItemVisibilityCheckedRecursive(false);
     QVERIFY(!node->isVisible());
@@ -446,34 +449,34 @@ private slots:
     QVERIFY(LayerOps::visibleLayersPaintOrder(&project).contains(layer));
     QVERIFY(!otherNode->itemVisibilityChecked());
     QVERIFY(!otherNode->isVisible());
+    QVERIFY(!sub->itemVisibilityChecked());
+    QVERIFY(!subNode->isVisible());
+    sub->setItemVisibilityChecked(true);
+    LayerOps::revealCheckedLegendNode(sub);
+    QVERIFY2(subNode->isVisible(), "전체 끄기 뒤 접힌 하위 묶음만 체크해도 자식 레이어가 켜져야 한다");
+    QVERIFY(LayerOps::visibleLayersPaintOrder(&project).contains(subLayer));
   }
 
   void sheetBasePaintLayersOmitAboveGeometries() {
     QgsProject project;
-    auto* labels = new QgsVectorLayer(QStringLiteral("Point?crs=EPSG:5186"),
-                                      QStringLiteral("지번"), QStringLiteral("memory"));
+    auto* labels = new QgsVectorLayer(QStringLiteral("Point?crs=EPSG:5186"), QStringLiteral("지번"), QStringLiteral("memory"));
     QgsPalLayerSettings settings;
     settings.fieldName = QStringLiteral("'n'");
     settings.isExpression = true;
     labels->setLabeling(new QgsVectorLayerSimpleLabeling(settings));
     labels->setLabelsEnabled(true);
-    auto* survey = new QgsVectorLayer(QStringLiteral("LineString?crs=EPSG:5186"),
-                                      QStringLiteral("조사선"), QStringLiteral("memory"));
+    auto* survey = new QgsVectorLayer(QStringLiteral("LineString?crs=EPSG:5186"), QStringLiteral("조사선"), QStringLiteral("memory"));
     survey->setRenderer(new QgsSingleSymbolRenderer(QgsLineSymbol::createSimple(
-        {{QStringLiteral("color"), QStringLiteral("255,0,0,255")},
-         {QStringLiteral("width"), QStringLiteral("0.6")}}).release()));
-    auto* heritage = new QgsVectorLayer(QStringLiteral("Polygon?crs=EPSG:5186"),
-                                        QStringLiteral("지정유산"), QStringLiteral("memory"));
+        {{QStringLiteral("color"), QStringLiteral("255,0,0,255")}, {QStringLiteral("width"), QStringLiteral("0.6")}}).release()));
+    auto* heritage = new QgsVectorLayer(QStringLiteral("Polygon?crs=EPSG:5186"), QStringLiteral("지정유산"), QStringLiteral("memory"));
     heritage->setRenderer(new QgsSingleSymbolRenderer(QgsFillSymbol::createSimple(
         {{QStringLiteral("style"), QStringLiteral("no")},
          {QStringLiteral("outline_color"), QStringLiteral("142,68,173,255")},
          {QStringLiteral("outline_width"), QStringLiteral("0.35")}}).release()));
     LayerOps::markReferenceLayer(heritage);
-    auto* topo = new QgsVectorLayer(QStringLiteral("LineString?crs=EPSG:5186"),
-                                    QStringLiteral("수치지형도"), QStringLiteral("memory"));
+    auto* topo = new QgsVectorLayer(QStringLiteral("LineString?crs=EPSG:5186"), QStringLiteral("수치지형도"), QStringLiteral("memory"));
     topo->setRenderer(new QgsSingleSymbolRenderer(QgsLineSymbol::createSimple(
-        {{QStringLiteral("color"), QStringLiteral("128,128,128,255")},
-         {QStringLiteral("width"), QStringLiteral("0.2")}}).release()));
+        {{QStringLiteral("color"), QStringLiteral("128,128,128,255")}, {QStringLiteral("width"), QStringLiteral("0.2")}}).release()));
     LayerOps::markReferenceLayer(topo);
     topo->setCustomProperty(QStringLiteral("ka_hgis/topographic_group"), QStringLiteral("topo"));
     project.addMapLayer(labels);
@@ -495,9 +498,7 @@ private slots:
     QVERIFY(base.contains(labels));
     QVERIFY(!base.contains(survey));
     QVERIFY2(!base.contains(heritage), "주변유적은 덧그림에서만 그린다");
-
-    auto* cadastral = new QgsVectorLayer(QStringLiteral("Polygon?crs=EPSG:5186"),
-                                         QStringLiteral("지적도"), QStringLiteral("memory"));
+    auto* cadastral = new QgsVectorLayer(QStringLiteral("Polygon?crs=EPSG:5186"), QStringLiteral("지적도"), QStringLiteral("memory"));
     cadastral->setCustomProperty(QStringLiteral("ka_hgis/cadastral"), true);
     cadastral->setRenderer(new QgsSingleSymbolRenderer(QgsFillSymbol::createSimple(
         {{QStringLiteral("style"), QStringLiteral("no")},
@@ -517,7 +518,6 @@ private slots:
     QVERIFY2(!withLots.contains(cadastral), "지적 지번은 본 화면에 남긴다");
     QVERIFY(withLots.contains(survey));
     QVERIFY(LayerOps::sheetBasePaintLayers(&project).contains(cadastral));
-
     QgsMapCanvas canvas;
     canvas.resize(400, 300);
     LayerOps::syncMapCanvas(&project, &canvas, false);

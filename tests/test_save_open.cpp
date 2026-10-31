@@ -2063,7 +2063,6 @@ private slots:
     QVERIFY(KaDrawingStudio::isLegacyA4LandscapeMm(297.0, 210.0));
     QVERIFY(!KaDrawingStudio::isLegacyA4LandscapeMm(317.0, 220.0));
     QVERIFY(!KaDrawingStudio::isLegacyA4LandscapeMm(210.0, 297.0));
-
     QgsProject project;
     project.setCrs(QgsCoordinateReferenceSystem(QStringLiteral("EPSG:5186")));
     QgsMapCanvas canvas;
@@ -2079,46 +2078,47 @@ private slots:
     auto* ly = view->currentLayout();
     auto* page = ly->pageCollection()->page(0);
     QVERIFY(page);
-    const auto before = ly->renderContext().measurementConverter().convert(
-        page->pageSize(), Qgis::LayoutUnit::Millimeters);
+    const auto before = ly->renderContext().measurementConverter().convert(page->pageSize(), Qgis::LayoutUnit::Millimeters);
     QCOMPARE(before.width(), 297.0);
     QCOMPARE(before.height(), 210.0);
-
     auto* map = dynamic_cast<QgsLayoutItemMap*>(ly->itemById(QStringLiteral("ka_map")));
     QVERIFY(map);
     const QSizeF beforeMap = map->rect().size();
     studio.applyFieldPageGrow();
-    const auto after = ly->renderContext().measurementConverter().convert(
-        page->pageSize(), Qgis::LayoutUnit::Millimeters);
+    const auto after = ly->renderContext().measurementConverter().convert(page->pageSize(), Qgis::LayoutUnit::Millimeters);
     QCOMPARE(after.width(), 317.0);
     QCOMPARE(after.height(), 220.0);
     qInfo() << "field page grow" << beforeMap << map->rect().size() << map->pos();
     QVERIFY2(qAbs(map->rect().width() - 297.0) < 1.0, "map width is page minus 10mm sides");
     QVERIFY2(qAbs(map->rect().height() - 172.0) < 1.0, "map height is page minus 10mm top and 38mm chrome");
     QVERIFY2(qAbs(map->pos().x() - 10.0) < 1.0, "left margin stays 10mm");
-
     studio.applyFieldPageGrow();
-    const auto again = ly->renderContext().measurementConverter().convert(
-        page->pageSize(), Qgis::LayoutUnit::Millimeters);
+    const auto again = ly->renderContext().measurementConverter().convert(page->pageSize(), Qgis::LayoutUnit::Millimeters);
     QCOMPARE(again.width(), 317.0);
     QCOMPARE(again.height(), 220.0);
-
     QgsProject reopenProject;
     reopenProject.setCrs(project.crs());
     {
       KaDrawingStudio first(&reopenProject, &canvas, 297., 210.);
       first.setAttribute(Qt::WA_DontShowOnScreen);
+      QVERIFY(QMetaObject::invokeMethod(&first, "beginPlaceLegend"));
+      if (auto* lg = first.findChild<QgsLayoutView*>()->currentLayout()->itemById(QStringLiteral("ka_legend")))
+        lg->setCustomProperty(QStringLiteral("ka_hgis/legend_kept_on_page"), true);
+      first.resetPaper(297., 420., true);
     }
-    KaDrawingStudio reopen(&reopenProject, &canvas, 297., 210.);
+    KaDrawingStudio reopen(&reopenProject, &canvas, 210., 297.);
     reopen.setAttribute(Qt::WA_DontShowOnScreen);
     reopen.show();
     QCoreApplication::processEvents();
-    auto* reopenView = reopen.findChild<QgsLayoutView*>();
-    QVERIFY(reopenView && reopenView->currentLayout());
-    auto* reopenPage = reopenView->currentLayout()->pageCollection()->page(0);
-    QVERIFY(reopenPage);
-    const auto grown = reopenView->currentLayout()->renderContext().measurementConverter().convert(
-        reopenPage->pageSize(), Qgis::LayoutUnit::Millimeters);
+    auto* reopenLy = reopen.findChild<QgsLayoutView*>()->currentLayout();
+    const QRectF a4Page(-1.0, -1.0, 212.0, 299.0);
+    for (const char* id : {"ka_scalebar", "ka_scale", "ka_crs", "ka_north", "ka_legend"}) {
+      auto* it = reopenLy->itemById(QString::fromLatin1(id));
+      QVERIFY2(it && a4Page.contains(QRectF(it->pos(), it->rect().size())), qPrintable(QString::fromLatin1(id)));
+    }
+    reopen.resetPaper(297., 210., true);
+    reopen.applyFieldPageGrow();
+    const auto grown = reopenLy->renderContext().measurementConverter().convert(reopenLy->pageCollection()->page(0)->pageSize(), Qgis::LayoutUnit::Millimeters);
     QCOMPARE(grown.width(), 317.0);
     QCOMPARE(grown.height(), 220.0);
   }

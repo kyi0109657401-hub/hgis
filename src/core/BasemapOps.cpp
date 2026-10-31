@@ -2326,19 +2326,15 @@ bool LayerOps::setMapLayerBrightness(QgsMapLayer* layer, int brightness, QgsMapC
 
 int LayerOps::mapLayerBrightness(const QgsMapLayer* layer) {
   const auto* rl = qobject_cast<const QgsRasterLayer*>(layer);
-  if (!rl) return 0;
-  const QgsBrightnessContrastFilter* f = rl->brightnessFilter();
-  return f ? f->brightness() : 0;
+  return (rl && rl->brightnessFilter()) ? rl->brightnessFilter()->brightness() : 0;
 }
-
 bool LayerOps::toggleLayerVisibility(QgsProject* project, QgsMapCanvas* canvas, const QString& name, bool visible) {
   if (!project) return false;
   const auto layers = layersMatchingBaseName(project, name);
   if (layers.isEmpty()) return false;
   QgsLayerTree* root = project->layerTreeRoot();
   for (QgsMapLayer* l : layers) {
-    if (!l) continue;
-    if (QgsLayerTreeLayer* node = root->findLayer(l->id())) {
+    if (QgsLayerTreeLayer* node = l ? root->findLayer(l->id()) : nullptr) {
       if (visible) node->setItemVisibilityCheckedParentRecursive(true);
       else node->setItemVisibilityChecked(false);
     }
@@ -2348,9 +2344,13 @@ bool LayerOps::toggleLayerVisibility(QgsProject* project, QgsMapCanvas* canvas, 
 }
 
 void LayerOps::revealCheckedLegendNode(QgsLayerTreeNode* node) {
-  if (!node || !node->itemVisibilityChecked() || node->isVisible())
-    return;
-  node->setItemVisibilityCheckedParentRecursive(true);
+  if (!node || !node->itemVisibilityChecked()) return;
+  if (auto* group = qobject_cast<QgsLayerTreeGroup*>(node)) {
+    const auto leaves = group->findLayers();
+    if (std::none_of(leaves.begin(), leaves.end(), [](const QgsLayerTreeLayer* l) { return l && l->itemVisibilityChecked(); }))
+      group->setItemVisibilityCheckedRecursive(true);
+  }
+  if (!node->isVisible()) node->setItemVisibilityCheckedParentRecursive(true);
 }
 
 bool LayerOps::isLayerVisible(QgsProject* project, const QString& name) {

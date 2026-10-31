@@ -147,6 +147,7 @@ void KaAboveLabelsOverlay::setLayers(const QList<QgsMapLayer*>& layers) {
   }
   watchLayers();
   setVisible(!m_layers.isEmpty());
+  updatePosition();
   m_dirty = true;
   update();
 }

@@ -546,9 +546,9 @@ void HeritageLayoutNumbers::followRenderedLabels(QgsLayoutItemMap* map) {
     m_previewBusy = false;
     if (m_exporting) return;
     if (map->property("ka_interacting").toBool()) { timer->start(); return; }
-    if (current) {
-      acceptRenderedLabels(map, numberPreviewResults(map));
-    } else {
+    if (current) acceptRenderedLabels(map, numberPreviewResults(map));
+    else if (m_previewDirty) {
+      m_previewDirty = false;
       map->invalidateCache();
       map->update();
     }
