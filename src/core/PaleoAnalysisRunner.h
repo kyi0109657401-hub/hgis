@@ -7,6 +7,7 @@
 #include <qgspointxy.h>
 #include <qgsrectangle.h>
 
+class QgsCoordinateReferenceSystem;
 class QgsFeedback;
 class QgsMapCanvas;
 class QgsProject;
@@ -32,6 +33,16 @@ public:
                                     const QString& sourceDemPath, const QString& surveyPath,
                                     QString* errorOut = nullptr);
 
+  // 국토지리정보원 수치지형도(3D 등고선 F001*·표고점 F002*)로부터 나무·건물이 제거된
+  // 순수 지형(Bare-earth) 정밀 국토지리원 DEM을 보간·합성하고 광역지형도·경사도와 함께 등록한다.
+  static QString buildNgiiDemFromTopographic(QgsProject* project, QgsMapCanvas* canvas,
+                                             const QString& surveyPath,
+                                             QString* errorOut = nullptr);
+
+  // 프로젝트에 등록된 DEM 중 국토지리원 정밀 DEM([DEM] 국토지리원_DEM.tif)을 최우선으로 찾고,
+  // 없을 때만 일반 DEM(Copernicus DSM 등)으로 폴백한다.
+  static QgsRasterLayer* findPreferredDem(const QgsProject* project);
+
   // [기능 2] 조사구역 반경 10km 기준 5대 원본 자료 확인·등록 및 HgisPaleoEngine 4단계 파이프라인 실행,
   // 파생 레이어([고지형] 7대 고지형 분류도, [고지형] 하상비고(REM), [고지형] 시추주상도 마커) 자동 등록.
   static hgis::paleo::PaleoAnalysisResult runFullPipeline(QgsProject* project,
@@ -53,4 +64,11 @@ public:
   static void registerBoreholeMarkers(
       QgsProject* project, const QString& gpkgPath,
       const std::vector<hgis::paleo::ParsedBoreholeSummary>& boreholes);
+
+  static void ensureReferenceLayers(QgsProject* project, QgsMapCanvas* canvas,
+                                    const QgsRectangle& ext5186, const QgsRectangle& ext10k5186,
+                                    const QString& paleoDir, QgsFeedback* feedback);
+  static std::vector<hgis::paleo::BoreholeRawInput> collectBoreholes(
+      QgsProject* project, const QgsCoordinateReferenceSystem& workCrs,
+      const QgsPointXY& centerPt);
 };

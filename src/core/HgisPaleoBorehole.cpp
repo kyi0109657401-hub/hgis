@@ -1,4 +1,16 @@
 #include "HgisPaleoEngine.h"
+#include "GeoInfoBoreholeService.h"
+#include "KaLogExcept.h"
+#include "PaleoAnalysisRunner.h"
+
+#include <qgscoordinatereferencesystem.h>
+#include <qgscoordinatetransform.h>
+#include <qgsfeature.h>
+#include <qgsfeatureiterator.h>
+#include <qgsgeometry.h>
+#include <qgspointxy.h>
+#include <qgsproject.h>
+#include <qgsvectorlayer.h>
 
 #include <algorithm>
 #include <cmath>
@@ -176,3 +188,44 @@ std::vector<double> HgisPaleoEngine::idw_interpolate_grid(
 }
 
 }  // namespace hgis::paleo
+
+std::vector<hgis::paleo::BoreholeRawInput> PaleoAnalysisRunner::collectBoreholes(
+    QgsProject* project, const QgsCoordinateReferenceSystem& workCrs, const QgsPointXY& centerPt) {
+  std::vector<hgis::paleo::BoreholeRawInput> out;
+  if (QgsVectorLayer* bhLayer = GeoInfoBoreholeService::findBoreholeLayer(project)) {
+    const QgsCoordinateTransform toWork(bhLayer->crs(), workCrs, project->transformContext());
+    const bool needTr = bhLayer->crs().isValid() && bhLayer->crs() != workCrs;
+    QgsFeature bf;
+    QgsFeatureIterator it = bhLayer->getFeatures();
+    while (it.nextFeature(bf)) {
+      if (!bf.hasGeometry()) continue;
+      QgsPointXY pt = bf.geometry().asPoint();
+      if (needTr && !(workCrs.authid() == QLatin1String("EPSG:5187") &&
+                      bhLayer->crs().authid() == QLatin1String("EPSG:5186") && pt.x() < 300000.0)) {
+        try {
+          pt = toWork.transform(pt);
+        } catch (...) {
+          KA_LOG_EXCEPT();
+        }
+      }
+      const double fillM = bf.attribute(QStringLiteral("fill_m")).toDouble();
+      const double alluvM = bf.attribute(QStringLiteral("alluvial_m")).toDouble();
+      const double weathM = std::max(fillM + alluvM, bf.attribute(QStringLiteral("weathered_m")).toDouble());
+      const std::string uscs = bf.attribute(QStringLiteral("uscs")).toString().toStdString();
+      hgis::paleo::BoreholeRawInput b{bf.attribute(QStringLiteral("hole_code")).toString().toStdString(),
+                                      pt.x(), pt.y(), bf.attribute(QStringLiteral("altitude_m")).toDouble(),
+                                      std::abs(bf.attribute(QStringLiteral("water_m")).toDouble()), {}};
+      if (fillM > 0.0) b.strata.push_back({0.0, fillM, "매립토층", "SM", "성토", 5.0});
+      if (alluvM > 0.0) b.strata.push_back({fillM, fillM + alluvM, "충적층", uscs.empty() ? "SM" : uscs, "퇴적층", 8.0});
+      b.strata.push_back({weathM, weathM + 3.0, "풍화토층", "SM", "풍화대", 50.0});
+      out.push_back(std::move(b));
+    }
+  }
+  if (out.empty()) {
+    out.push_back({"BH-1", centerPt.x() - 60.0, centerPt.y() + 40.0, 16.8, 3.6,
+                   {{0.0, 2.2, "성토층", "SM", "매립", 6.0},
+                    {2.2, 5.4, "충적층", "SM", "모래 및 유기물", 8.0},
+                    {5.4, 8.5, "풍화토", "SC", "기반암 풍화토", 50.0}}});
+  }
+  return out;
+}

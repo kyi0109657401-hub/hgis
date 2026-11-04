@@ -122,6 +122,15 @@ void MainWindow::startDemDownload() {
   if (!QStandardPaths::isTestModeEnabled()) {
     openTopographicDownload();
   }
+  const QString builtNgii = PaleoAnalysisRunner::buildNgiiDemFromTopographic(
+      QgsProject::instance(), m_canvas, m_surveyPath, nullptr);
+  if (!builtNgii.isEmpty()) {
+    QgsProject::instance()->setDirty(true);
+    statusBar()->showMessage(
+        QStringLiteral("국토지리정보원 수치지형도 등고선으로 정밀 DEM·광역지형도·경사도를 생성했습니다."),
+        8000);
+    return;
+  }
   const QString dir = referenceDownloadFolder(QStringLiteral("DEM"));
   if (dir.isEmpty()) return;
   QgsRectangle extent = PaleoAnalysisRunner::surveyExtentRadius(QgsProject::instance(), m_canvas, 5000.0);
@@ -148,8 +157,12 @@ void MainWindow::startDemDownload() {
       return;
     }
     result.retainFiles();
-    PaleoAnalysisRunner::registerDemWideLayers(QgsProject::instance(), window->m_canvas,
-                                               result.rasterUri, window->m_surveyPath, nullptr);
+    if (PaleoAnalysisRunner::buildNgiiDemFromTopographic(
+            QgsProject::instance(), window->m_canvas, window->m_surveyPath, nullptr)
+            .isEmpty()) {
+      PaleoAnalysisRunner::registerDemWideLayers(QgsProject::instance(), window->m_canvas,
+                                                 result.rasterUri, window->m_surveyPath, nullptr);
+    }
     for (QgsMapLayer* layer : QgsProject::instance()->mapLayers()) {
       // By identity (ka_hgis/reference_kind = dem), not by the title "DEM".
       if (!BasemapDsm::isDemLayer(layer) || layer->source() != result.rasterUri) continue;

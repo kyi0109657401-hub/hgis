@@ -1,20 +1,16 @@
 #include "PaleoAnalysisRunner.h"
-#include "BasemapDsm.h"
 #include "DemAnalyzer.h"
 #include "DemDownloadService.h"
 #include "DemPresentation.h"
 #include "GeoInfoBoreholeService.h"
 #include "GeologyMapService.h"
 #include "KaLogExcept.h"
-#include "KigamPaleoService.h"
 #include "LayerOps.h"
 #include "PaleoDemClassifier.h"
 #include "PaleoLandformService.h"
-#include "RiverMapService.h"
-#include "SoilMapService.h"
-#include "VworldSettings.h"
 
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <algorithm>
 #include <cmath>
@@ -36,20 +32,13 @@ namespace {
 
 QgsRasterLayer* registerNamedRaster(QgsProject* project, const QString& path, const QString& title) {
   if (!project || !QFileInfo::exists(path)) return nullptr;
-  for (QgsMapLayer* l : project->mapLayersByName(title)) {
+  for (QgsMapLayer* l : project->mapLayersByName(title))
     if (l) project->removeMapLayer(l->id());
-  }
   auto* rl = new QgsRasterLayer(path, title, QStringLiteral("gdal"));
-  if (!rl->isValid()) {
-    delete rl;
-    return nullptr;
-  }
+  if (!rl->isValid()) { delete rl; return nullptr; }
   LayerOps::markReferenceLayer(rl);
   LayerOps::applyLegendCrsLabel(rl);
-  if (!project->addMapLayer(rl, true)) {
-    delete rl;
-    return nullptr;
-  }
+  if (!project->addMapLayer(rl, true)) { delete rl; return nullptr; }
   LayerOps::placeInLegendGroup(project, rl, QStringLiteral("참조 지도"));
   return rl;
 }
@@ -59,11 +48,67 @@ QgsRectangle toEpsg5186Box(const QgsRectangle& workBox, const QgsCoordinateRefer
   const QgsCoordinateReferenceSystem crs5186(QStringLiteral("EPSG:5186"));
   if (!workCrs.isValid() || workCrs == crs5186) return workBox;
   try {
-    const QgsCoordinateTransform tr(workCrs, crs5186, project->transformContext());
-    return tr.transformBoundingBox(workBox);
+    return QgsCoordinateTransform(workCrs, crs5186, project->transformContext())
+        .transformBoundingBox(workBox);
   } catch (...) {
     KA_LOG_EXCEPT();
     return workBox;
+  }
+}
+
+hgis::paleo::SoilLandformCode mapSoilCode(const QString& raw) {
+  const QString c = raw.trimmed();
+  if (c == QLatin1String("04") || c == QLatin1String("4")) return hgis::paleo::SoilLandformCode::ValleyFan;
+  if (c == QLatin1String("05") || c == QLatin1String("5")) return hgis::paleo::SoilLandformCode::MarinePlain;
+  if (c == QLatin1String("06") || c == QLatin1String("6")) return hgis::paleo::SoilLandformCode::FluvialPlain;
+  if (c == QLatin1String("08") || c == QLatin1String("8")) return hgis::paleo::SoilLandformCode::DiluvialTerrace;
+  if (c == QLatin1String("01") || c == QLatin1String("1")) return hgis::paleo::SoilLandformCode::Mountain;
+  return hgis::paleo::SoilLandformCode::Hillslope;
+}
+
+hgis::paleo::GeologyCode mapGeolSymbol(const QString& sym, const QString& era) {
+  const QString s = sym.trimmed().toUpper();
+  if (s.startsWith(QLatin1String("QR")) || s.startsWith(QLatin1String("QT")))
+    return hgis::paleo::GeologyCode::QrTerrace;
+  if (s.startsWith(QLatin1String("QB"))) return hgis::paleo::GeologyCode::QbaBasalt;
+  if (s.startsWith(QLatin1Char('Q')) || era.contains(QStringLiteral("제4기")))
+    return hgis::paleo::GeologyCode::QaAlluvium;
+  return hgis::paleo::GeologyCode::Bedrock;
+}
+
+void rasterizePolyGrid(QgsVectorLayer* vl, const QgsCoordinateReferenceSystem& workCrs,
+                       QgsProject* project, const QgsRectangle& gridBox,
+                       const hgis::paleo::GridTransform& tf,
+                       const std::function<void(const QgsFeature&, size_t)>& applyCell) {
+  if (!vl || !vl->isValid()) return;
+  const QgsCoordinateTransform toWork(vl->crs(), workCrs, project->transformContext());
+  const QgsCoordinateTransform toLayer(workCrs, vl->crs(), project->transformContext());
+  const bool needTr = vl->crs().isValid() && vl->crs() != workCrs;
+  QgsRectangle qBox = gridBox;
+  if (needTr) {
+    try { qBox = toLayer.transformBoundingBox(gridBox); } catch (...) { KA_LOG_EXCEPT(); }
+  }
+  QgsFeature f;
+  QgsFeatureIterator it = vl->getFeatures(QgsFeatureRequest(qBox));
+  while (it.nextFeature(f)) {
+    if (!f.hasGeometry()) continue;
+    QgsGeometry g = f.geometry();
+    if (needTr) {
+      try { g.transform(toWork); } catch (...) { KA_LOG_EXCEPT(); continue; }
+    }
+    const QgsRectangle b = g.boundingBox();
+    const int c0 = std::clamp(static_cast<int>((b.xMinimum() - tf.origin_x) / tf.cell_size), 0, tf.width - 1);
+    const int c1 = std::clamp(static_cast<int>((b.xMaximum() - tf.origin_x) / tf.cell_size), 0, tf.width - 1);
+    const int r0 = std::clamp(static_cast<int>((tf.origin_y - b.yMaximum()) / tf.cell_size), 0, tf.height - 1);
+    const int r1 = std::clamp(static_cast<int>((tf.origin_y - b.yMinimum()) / tf.cell_size), 0, tf.height - 1);
+    for (int r = r0; r <= r1; ++r) {
+      for (int c = c0; c <= c1; ++c) {
+        double wx = 0.0, wy = 0.0;
+        tf.pixel_to_world(r, c, wx, wy);
+        const QgsPointXY pt(wx, wy);
+        if (g.contains(&pt)) applyCell(f, static_cast<size_t>(r) * tf.width + c);
+      }
+    }
   }
 }
 
@@ -80,73 +125,30 @@ hgis::paleo::PaleoAnalysisResult PaleoAnalysisRunner::runFullPipeline(QgsProject
                                : QgsCoordinateReferenceSystem(QStringLiteral("EPSG:5187"));
   QgsGeometry aoiGeom;
   QgsPointXY centerPt;
-  const QgsRectangle ext10k =
-      surveyExtentRadius(project, canvas, kRadiusMeters, &aoiGeom, &centerPt);
+  const QgsRectangle ext10k = surveyExtentRadius(project, canvas, kRadiusMeters, &aoiGeom, &centerPt);
   const QgsRectangle ext5k = surveyExtentRadius(project, canvas, 5000.0, nullptr, nullptr);
-  const QgsRectangle ext5186 = toEpsg5186Box(ext5k, workCrs, project);
-  const QgsRectangle ext10k5186 = toEpsg5186Box(ext10k, workCrs, project);
-
   const QString paleoDir =
-      surveyPath.isEmpty()
-          ? QDir::temp().filePath(QStringLiteral("ka-hgis-paleo"))
-          : QFileInfo(surveyPath).absoluteDir().filePath(QStringLiteral("고지형분석"));
+      surveyPath.isEmpty() ? QDir::temp().filePath(QStringLiteral("ka-hgis-paleo"))
+                           : QFileInfo(surveyPath).absoluteDir().filePath(QStringLiteral("고지형분석"));
   QDir().mkpath(paleoDir);
+  ensureReferenceLayers(project, canvas, toEpsg5186Box(ext5k, workCrs, project),
+                        toEpsg5186Box(ext10k, workCrs, project), paleoDir, feedback);
 
-  if (!PaleoLandformService::findSoilTerrainLayer(project)) {
-    const auto prep = SoilMapService::prepare(
-        ext5186, QDir(paleoDir).filePath(QStringLiteral("토양도_흙토람.gpkg")),
-        project->transformContext(), feedback);
-    if (prep.isReady()) SoilMapService::addPrepared(project, canvas, prep, nullptr);
-  }
-  if (!GeologyMapService::existingGeologyLayer(project)) {
-    const auto prep = GeologyMapService::prepare(
-        ext10k5186, QDir(paleoDir).filePath(QStringLiteral("지질도_KIGAM.gpkg")),
-        project->transformContext(), feedback);
-    if (prep.isReady()) GeologyMapService::addPrepared(project, canvas, prep, nullptr);
-  }
-  {
-    const auto prep = KigamPaleoService::prepare(
-        ext10k5186, QDir(paleoDir).filePath(QStringLiteral("고지형_KIGAM.gpkg")),
-        project->transformContext(), feedback);
-    if (prep.isReady()) KigamPaleoService::addPrepared(project, canvas, prep, nullptr);
-  }
-  if (!GeoInfoBoreholeService::findBoreholeLayer(project)) {
-    const auto prep = GeoInfoBoreholeService::prepare(
-        ext5186, QDir(paleoDir).filePath(QStringLiteral("시추주상도_국토지반정보.gpkg")),
-        project->transformContext(), feedback);
-    if (prep.isReady()) GeoInfoBoreholeService::addPrepared(project, canvas, prep, nullptr);
-  }
-  const QString vwKey = VworldSettings::loadApiKey();
-  if (!vwKey.isEmpty() && project->mapLayersByName(QStringLiteral("수계도(하천망)")).isEmpty()) {
-    const auto prep = RiverMapService::prepare(
-        ext10k5186, vwKey, QDir(paleoDir).filePath(QStringLiteral("수계도_VWorld.gpkg")),
-        project->transformContext(), feedback);
-    if (prep.isReady()) RiverMapService::addPrepared(project, canvas, prep, nullptr);
-  }
-
-  QgsRasterLayer* demLayer = BasemapDsm::findDem(project);
+  buildNgiiDemFromTopographic(project, canvas, surveyPath, nullptr);
+  QgsRasterLayer* demLayer = findPreferredDem(project);
   if (!demLayer || !QFileInfo::exists(demLayer->source())) {
     try {
-      const QgsCoordinateTransform toWgs(workCrs,
-                                         QgsCoordinateReferenceSystem(QStringLiteral("EPSG:4326")),
-                                         project->transformContext());
-      const QgsRectangle wgsBox = toWgs.transformBoundingBox(ext5k);
-      const auto demPrep = DemDownloadService::prepare(
-          wgsBox, QDir(paleoDir).filePath(QStringLiteral("국토지리원_DEM.tif")), feedback);
+      const QgsCoordinateTransform toWgs(workCrs, QgsCoordinateReferenceSystem(QStringLiteral("EPSG:4326")), project->transformContext());
+      const auto demPrep = DemDownloadService::prepare(toWgs.transformBoundingBox(ext5k), QDir(paleoDir).filePath(QStringLiteral("국토지리원_DEM.tif")), feedback);
       if (demPrep.isReady()) {
         demPrep.retainFiles();
         registerDemWideLayers(project, canvas, demPrep.rasterUri, surveyPath, nullptr);
-        demLayer = BasemapDsm::findDem(project);
-        if (!demLayer) {
-          demLayer = qobject_cast<QgsRasterLayer*>(
-              project->mapLayersByName(QStringLiteral("[DEM] 국토지리원_DEM.tif")).value(0));
-        }
+        demLayer = findPreferredDem(project);
       }
-    } catch (...) {
-      KA_LOG_EXCEPT();
-    }
+    } catch (...) { KA_LOG_EXCEPT(); }
   } else {
     registerDemWideLayers(project, canvas, demLayer->source(), surveyPath, nullptr);
+    demLayer = findPreferredDem(project);
   }
 
   constexpr int kGridN = 160;
@@ -159,15 +161,11 @@ hgis::paleo::PaleoAnalysisResult PaleoAnalysisRunner::runFullPipeline(QgsProject
   if (demLayer && demLayer->isValid() && QFileInfo::exists(demLayer->source())) {
     try {
       QgsRectangle dBox = gridBox;
-      if (demLayer->crs().isValid() && demLayer->crs() != workCrs) {
-        const QgsCoordinateTransform tr(workCrs, demLayer->crs(), project->transformContext());
-        dBox = tr.transformBoundingBox(gridBox);
-      }
+      if (demLayer->crs().isValid() && demLayer->crs() != workCrs)
+        dBox = QgsCoordinateTransform(workCrs, demLayer->crs(), project->transformContext()).transformBoundingBox(gridBox);
       std::vector<float> zBuf;
       DemAnalyzer::RasterInfo rInfo;
-      if (DemAnalyzer::readFloatWindow(demLayer->source(), dBox.xMinimum(), dBox.yMinimum(),
-                                       dBox.xMaximum(), dBox.yMaximum(), kGridN, &zBuf, &rInfo,
-                                       nullptr) &&
+      if (DemAnalyzer::readFloatWindow(demLayer->source(), dBox.xMinimum(), dBox.yMinimum(), dBox.xMaximum(), dBox.yMaximum(), kGridN, &zBuf, &rInfo, nullptr) &&
           rInfo.width > 0 && rInfo.height > 0) {
         for (int r = 0; r < kGridN; ++r) {
           const int sr = std::clamp(r * rInfo.height / kGridN, 0, rInfo.height - 1);
@@ -179,103 +177,93 @@ hgis::paleo::PaleoAnalysisResult PaleoAnalysisRunner::runFullPipeline(QgsProject
           }
         }
       }
-    } catch (...) {
-      KA_LOG_EXCEPT();
-    }
-  } else {
-    for (int r = 0; r < kGridN; ++r) {
-      for (int c = 0; c < kGridN; ++c) {
-        const double distFromRiver = std::abs(c - kGridN / 4) * cellSz;
-        zCurr[static_cast<size_t>(r) * kGridN + c] =
-            12.0 + (distFromRiver < 300.0 ? 2.6 : (distFromRiver > 900.0 ? 18.0 : 1.1));
-      }
-    }
+    } catch (...) { KA_LOG_EXCEPT(); }
   }
 
-  std::vector<hgis::paleo::SoilLandformCode> soilGrid(totalCells,
-                                                      hgis::paleo::SoilLandformCode::FluvialPlain);
+  std::vector<hgis::paleo::SoilLandformCode> soilGrid(totalCells, hgis::paleo::SoilLandformCode::FluvialPlain);
   std::vector<hgis::paleo::GeologyCode> geolGrid(totalCells, hgis::paleo::GeologyCode::QaAlluvium);
-  std::vector<uint8_t> riverMask(totalCells, 0);
-  std::vector<uint8_t> aoiMask(totalCells, 0);
+  std::vector<uint8_t> riverMask(totalCells, 0), aoiMask(totalCells, 0);
   for (int r = 0; r < kGridN; ++r) {
     for (int c = 0; c < kGridN; ++c) {
       double wx = 0.0, wy = 0.0;
       tf.pixel_to_world(r, c, wx, wy);
-      const size_t idx = static_cast<size_t>(r) * kGridN + c;
       const QgsPointXY pt(wx, wy);
-      if (!aoiGeom.isEmpty() && aoiGeom.contains(&pt)) aoiMask[idx] = 1;
-      if (c >= kGridN / 5 && c <= kGridN / 5 + 3) riverMask[idx] = 1;
+      if (!aoiGeom.isEmpty() && aoiGeom.contains(&pt)) aoiMask[static_cast<size_t>(r) * kGridN + c] = 1;
     }
   }
+  if (QgsVectorLayer* soilVl = PaleoLandformService::findSoilTerrainLayer(project)) {
+    const int iGeo = soilVl->fields().indexOf(QStringLiteral("soil_type_geo"));
+    if (iGeo >= 0)
+      rasterizePolyGrid(soilVl, workCrs, project, gridBox, tf, [&](const QgsFeature& f, size_t idx) {
+        soilGrid[idx] = mapSoilCode(f.attribute(iGeo).toString());
+      });
+  }
+  if (auto* geolVl = qobject_cast<QgsVectorLayer*>(GeologyMapService::existingGeologyLayer(project))) {
+    const int iSym = geolVl->fields().indexOf(QStringLiteral("기호"));
+    const int iEra = geolVl->fields().indexOf(QStringLiteral("era_class"));
+    if (iSym >= 0)
+      rasterizePolyGrid(geolVl, workCrs, project, gridBox, tf, [&](const QgsFeature& f, size_t idx) {
+        geolGrid[idx] = mapGeolSymbol(f.attribute(iSym).toString(), iEra >= 0 ? f.attribute(iEra).toString() : QString());
+      });
+  }
 
-  std::vector<hgis::paleo::BoreholeRawInput> rawBoreholes;
-  if (QgsVectorLayer* bhLayer = GeoInfoBoreholeService::findBoreholeLayer(project)) {
-    QgsFeature bf;
-    QgsFeatureIterator it = bhLayer->getFeatures();
-    while (it.nextFeature(bf)) {
-      if (!bf.hasGeometry()) continue;
-      const QgsPointXY pt = bf.geometry().asPoint();
-      hgis::paleo::BoreholeRawInput b;
-      b.hole_id = bf.attribute(QStringLiteral("hole_code")).toString().toStdString();
-      b.x = pt.x();
-      b.y = pt.y();
-      b.ground_elev_m = bf.attribute(QStringLiteral("altitude_m")).toDouble();
-      b.water_depth_m = std::abs(bf.attribute(QStringLiteral("water_m")).toDouble());
-      const double fillM = bf.attribute(QStringLiteral("fill_m")).toDouble();
-      const double alluvM = bf.attribute(QStringLiteral("alluvial_m")).toDouble();
-      const double weathM = std::max(fillM + alluvM, bf.attribute(QStringLiteral("weathered_m")).toDouble());
-      const std::string uscs = bf.attribute(QStringLiteral("uscs")).toString().toStdString();
-      if (fillM > 0.0) b.strata.push_back({0.0, fillM, "매립토층", "SM", "성토", 5.0});
-      if (alluvM > 0.0)
-        b.strata.push_back({fillM, fillM + alluvM, "충적층", uscs.empty() ? "SM" : uscs, "퇴적층", 8.0});
-      b.strata.push_back({weathM, weathM + 3.0, "풍화토층", "SM", "풍화대", 50.0});
-      rawBoreholes.push_back(std::move(b));
+  QString riverName = QStringLiteral("인접 하천");
+  bool hasRiverCells = false;
+  for (QgsMapLayer* l : project->mapLayers()) {
+    auto* rv = qobject_cast<QgsVectorLayer*>(l);
+    if (!rv || !rv->isValid() || (!rv->name().contains(QStringLiteral("수계")) && rv->fields().indexOf(QStringLiteral("riv_nm")) < 0))
+      continue;
+    const int iNm = rv->fields().indexOf(QStringLiteral("riv_nm"));
+    double bestDist = 1e18;
+    const QgsCoordinateTransform toWork(rv->crs(), workCrs, project->transformContext());
+    const bool needTr = rv->crs().isValid() && rv->crs() != workCrs;
+    QgsFeature rf;
+    QgsFeatureIterator it = rv->getFeatures();
+    while (it.nextFeature(rf)) {
+      if (!rf.hasGeometry()) continue;
+      QgsGeometry g = rf.geometry();
+      if (needTr) { try { g.transform(toWork); } catch (...) { KA_LOG_EXCEPT(); continue; } }
+      const double d = g.distance(QgsGeometry::fromPointXY(centerPt));
+      if (iNm >= 0 && d < bestDist && !rf.attribute(iNm).toString().trimmed().isEmpty()) {
+        bestDist = d;
+        riverName = rf.attribute(iNm).toString().trimmed();
+      }
     }
+    rasterizePolyGrid(rv, workCrs, project, gridBox, tf, [&](const QgsFeature&, size_t idx) {
+      riverMask[idx] = 1;
+      hasRiverCells = true;
+    });
+    break;
   }
-  if (rawBoreholes.empty()) {
-    rawBoreholes.push_back(
-        {"BH-1",
-         centerPt.x() - 60.0,
-         centerPt.y() + 40.0,
-         16.8,
-         3.6,
-         {{0.0, 2.2, "성토층", "SM", "매립", 6.0},
-          {2.2, 4.1, "충적층", "SM", "세립 모래", 9.0},
-          {4.1, 5.4, "충적층", "CL", "암회색 점토 및 유기물", 4.0},
-          {5.4, 8.5, "풍화토", "SC", "기반암 풍화토", 50.0}}});
-    rawBoreholes.push_back(
-        {"BH-2",
-         centerPt.x() + 75.0,
-         centerPt.y() - 35.0,
-         16.1,
-         3.4,
-         {{0.0, 2.5, "매립층", "ML", "성토", 5.0},
-          {2.5, 5.6, "퇴적층", "CL", "실트질 점토", 3.0},
-          {5.6, 9.0, "풍화암", "SM", "풍화대", 50.0}}});
+  if (!hasRiverCells) {
+    for (int r = 0; r < kGridN; ++r)
+      for (int c = kGridN / 5; c <= kGridN / 5 + 3 && c < kGridN; ++c)
+        riverMask[static_cast<size_t>(r) * kGridN + c] = 1;
   }
 
+  const auto rawBoreholes = collectBoreholes(project, workCrs, centerPt);
+  const QByteArray rUtf8 = riverName.toUtf8();
   res = hgis::paleo::HgisPaleoEngine::run_pipeline(
       zCurr, tf, rawBoreholes, soilGrid, geolGrid, riverMask, aoiMask,
-      {centerPt.x(), centerPt.y()}, "인접 하천", "06 하성평탄지·08 홍적대지",
-      "Qa 제4기 충적층·Qr 하안단구층");
+      {centerPt.x(), centerPt.y()}, rUtf8.constData(), "06 하성평탄지·08 홍적대지", "Qa 제4기 충적층·Qr 하안단구층");
 
   const QString wkt = workCrs.toWkt();
   const QString classTif = QDir(paleoDir).filePath(QStringLiteral("고지형_7대분류도.tif"));
   const QString remTif = QDir(paleoDir).filePath(QStringLiteral("고지형_하상비고_REM.tif"));
+  for (const QString& title : {QStringLiteral("[고지형] 하상비고(REM)"), QStringLiteral("[고지형] 7대 고지형 분류도")})
+    for (QgsMapLayer* l : project->mapLayersByName(title))
+      if (l) project->removeMapLayer(l->id());
+  QFile::remove(classTif);
+  QFile::remove(remTif);
   writeRgbaGeoTiff(classTif, tf, wkt, res.paleo_rgba_buffer, nullptr);
   writeFloatGeoTiff(remTif, tf, wkt, res.rem, nullptr);
-
-  if (auto* remLayer = registerNamedRaster(project, remTif, QStringLiteral("[고지형] 하상비고(REM)"))) {
+  if (auto* remLayer = registerNamedRaster(project, remTif, QStringLiteral("[고지형] 하상비고(REM)")))
     DemPresentation::apply(remLayer, QStringLiteral("viewport"), remLayer->extent());
-  }
   registerNamedRaster(project, classTif, QStringLiteral("[고지형] 7대 고지형 분류도"));
-  registerBoreholeMarkers(project, QDir(paleoDir).filePath(QStringLiteral("고지형_시추마커.gpkg")),
-                          res.parsed_boreholes);
-
+  registerBoreholeMarkers(project, QDir(paleoDir).filePath(QStringLiteral("고지형_시추마커.gpkg")), res.parsed_boreholes);
   if (QgsVectorLayer* soil = PaleoLandformService::findSoilTerrainLayer(project)) {
     QString err;
-    if (QgsVectorLayer* paleoVl =
-            PaleoLandformService::ensureInterpretationLayer(project, surveyPath, &err)) {
+    if (QgsVectorLayer* paleoVl = PaleoLandformService::ensureInterpretationLayer(project, surveyPath, &err)) {
       PaleoLandformService::seedInterpretationFromSoil(soil, paleoVl, &err);
       PaleoDemClassifier::enrichInterpretationLayer(project, paleoVl);
       PaleoLandformService::applyInterpretationStyle(paleoVl);

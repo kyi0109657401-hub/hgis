@@ -187,7 +187,11 @@ PaleoDemClassifier::Metrics PaleoDemClassifier::samplePolygonMetrics(
       while (it.nextFeature(bf)) {
         if (!bf.hasGeometry()) continue;
         QgsGeometry bg = bf.geometry();
-        if (needTr && bg.transform(tr) != Qgis::GeometryOperationResult::Success) continue;
+        const QgsPointXY rawPt = bg.asPoint();
+        if (needTr && !(workCrs.authid() == QLatin1String("EPSG:5187") &&
+                        bh->crs().authid() == QLatin1String("EPSG:5186") && rawPt.x() < 300000.0)) {
+          if (bg.transform(tr) != Qgis::GeometryOperationResult::Success) continue;
+        }
         const double d = geomWorkCrs.distance(bg);
         if (std::isfinite(d) && d <= bestDist) {
           bestDist = d;
@@ -209,7 +213,15 @@ PaleoDemClassifier::Metrics PaleoDemClassifier::samplePolygonMetrics(
 
 int PaleoDemClassifier::enrichInterpretationLayer(QgsProject* project, QgsVectorLayer* paleoLayer) {
   if (!project || !paleoLayer || !paleoLayer->isValid()) return 0;
-  QgsRasterLayer* dem = BasemapDsm::findDem(project);
+  QgsRasterLayer* dem = nullptr;
+  for (QgsMapLayer* l : project->mapLayersByName(QStringLiteral("[DEM] 국토지리원_DEM.tif"))) {
+    auto* rl = qobject_cast<QgsRasterLayer*>(l);
+    if (rl && rl->isValid() && !rl->source().startsWith(QLatin1String("type="))) {
+      dem = rl;
+      break;
+    }
+  }
+  if (!dem) dem = BasemapDsm::findDem(project);
   QgsVectorLayer* bh = GeoInfoBoreholeService::findBoreholeLayer(project);
   QgsVectorLayer* river = findRiverLayer(project);
   if (!dem && !bh && !river) return 0;

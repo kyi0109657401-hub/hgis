@@ -41,16 +41,23 @@ namespace {
 constexpr const char* kLayerTitle = "시추주상도(국토지반정보)";
 constexpr const char* kCustomTag = "ka_hgis/geoinfo_borehole";
 
-QStringList fetchHoleCodesInExtent(const QgsRectangle& extent5186,
-                                   const QgsCoordinateTransformContext& transformContext,
-                                   QgsFeedback* feedback) {
-  QStringList codes;
+struct HoleCandidate {
+  QString code;
+  QgsPointXY pt5186;
+  bool hasPt5186 = false;
+};
+
+QList<HoleCandidate> fetchHoleCandidatesInExtent(
+    const QgsRectangle& extent5186, const QgsCoordinateTransformContext& transformContext,
+    QgsFeedback* feedback) {
+  QList<HoleCandidate> out;
   QSet<QString> seen;
   try {
     const QgsCoordinateReferenceSystem crs5186(QStringLiteral("EPSG:5186"));
     const QgsCoordinateReferenceSystem crs3857(QStringLiteral("EPSG:3857"));
-    const QgsCoordinateTransform tr(crs5186, crs3857, transformContext);
-    const QgsRectangle b = tr.transformBoundingBox(extent5186);
+    const QgsCoordinateTransform to3857(crs5186, crs3857, transformContext);
+    const QgsCoordinateTransform to5186(crs3857, crs5186, transformContext);
+    const QgsRectangle b = to3857.transformBoundingBox(extent5186);
     QUrl url(QStringLiteral("https://www.geoinfo.or.kr/proxyo2map.jsp"));
     QUrlQuery q;
     q.addQueryItem(QStringLiteral("SERVICE"), QStringLiteral("WMS"));
@@ -80,21 +87,34 @@ QStringList fetchHoleCodesInExtent(const QgsRectangle& extent5186,
     if (net.get(req, false, feedback) == QgsBlockingNetworkRequest::NoError) {
       const QJsonObject root = QJsonDocument::fromJson(net.reply().content()).object();
       for (const QJsonValue& v : root.value(QStringLiteral("features")).toArray()) {
-        const QJsonObject props = v.toObject().value(QStringLiteral("properties")).toObject();
+        const QJsonObject feat = v.toObject();
+        const QJsonObject props = feat.value(QStringLiteral("properties")).toObject();
         const QString code = props.value(QStringLiteral("HOLE_CODE")).toString().trimmed();
         const double x = props.value(QStringLiteral("HOLE_LOCATION_TM_X")).toDouble();
         const double y = props.value(QStringLiteral("HOLE_LOCATION_TM_Y")).toDouble();
+        QgsPointXY pt5186(x, y);
+        bool hasPt = (x > 0.0 && y > 0.0 && extent5186.contains(pt5186));
+        const QJsonArray coords =
+            feat.value(QStringLiteral("geometry")).toObject().value(QStringLiteral("coordinates")).toArray();
+        if (coords.size() >= 2) {
+          try {
+            pt5186 = to5186.transform(QgsPointXY(coords[0].toDouble(), coords[1].toDouble()));
+            hasPt = true;
+          } catch (...) {
+            KA_LOG_EXCEPT();
+          }
+        }
         if (!code.isEmpty() && !seen.contains(code) &&
-            (x <= 0.0 || extent5186.contains(QgsPointXY(x, y)))) {
+            (x <= 0.0 || extent5186.contains(pt5186))) {
           seen.insert(code);
-          codes.append(code);
+          out.append({code, pt5186, hasPt});
         }
       }
     }
   } catch (...) {
     KA_LOG_EXCEPT();
   }
-  return codes;
+  return out;
 }
 
 }  // namespace
@@ -105,8 +125,9 @@ PreparedReferenceMap GeoInfoBoreholeService::prepare(
   PreparedReferenceMap result;
   if (!ReferenceMapPreparation::initializeStorage(result, requestedBasePath)) return result;
   const QString outPath = result.gpkgPath;
-  const QStringList codes = fetchHoleCodesInExtent(extent5186, transformContext, feedback);
-  if (codes.isEmpty()) {
+  const QList<HoleCandidate> candidates =
+      fetchHoleCandidatesInExtent(extent5186, transformContext, feedback);
+  if (candidates.isEmpty()) {
     result.error = QStringLiteral("현재 화면 범위 안에 등록된 국토지반정보 시추공이 없습니다.");
     return result;
   }
@@ -129,7 +150,7 @@ PreparedReferenceMap GeoInfoBoreholeService::prepare(
   mem.updateFields();
 
   QgsFeatureList feats;
-  const int limit = std::min<int>(codes.size(), 25);
+  const int limit = std::min<int>(candidates.size(), 25);
   for (int i = 0; i < limit; ++i) {
     if (feedback && feedback->isCanceled()) {
       result.status = PreparedReferenceMap::Status::Cancelled;
@@ -138,17 +159,22 @@ PreparedReferenceMap GeoInfoBoreholeService::prepare(
     if (feedback) feedback->setProgress((i * 90.0) / std::max(1, limit));
     QUrl u(QStringLiteral("https://www.geoinfo.or.kr/map/getSichudanData.do"));
     QUrlQuery q;
-    q.addQueryItem(QStringLiteral("code"), codes[i]);
+    q.addQueryItem(QStringLiteral("code"), candidates[i].code);
     u.setQuery(q);
     QNetworkRequest req(u);
     req.setTransferTimeout(10000);
     QgsBlockingNetworkRequest net;
     if (net.get(req, false, feedback) != QgsBlockingNetworkRequest::NoError) continue;
     BoreholeRecord rec;
-    if (!parseSichudanJson(net.reply().content(), &rec) || rec.tmX <= 0.0 || rec.tmY <= 0.0)
+    if (!parseSichudanJson(net.reply().content(), &rec)) continue;
+    QgsPointXY pt5186(rec.tmX, rec.tmY);
+    if (candidates[i].hasPt5186) {
+      pt5186 = candidates[i].pt5186;
+    } else if (rec.tmX <= 0.0 || rec.tmY <= 0.0) {
       continue;
+    }
     QgsFeature f(mem.fields());
-    f.setGeometry(QgsGeometry::fromPointXY(QgsPointXY(rec.tmX, rec.tmY)));
+    f.setGeometry(QgsGeometry::fromPointXY(pt5186));
     f.setAttribute(QStringLiteral("hole_code"), rec.holeCode);
     f.setAttribute(QStringLiteral("project_name"), rec.projectName);
     f.setAttribute(QStringLiteral("altitude_m"), rec.altitudeM);

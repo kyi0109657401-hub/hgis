@@ -14,6 +14,7 @@
 #include <qgsfields.h>
 #include <qgsgeometry.h>
 #include <qgsproject.h>
+#include <qgsrasterlayer.h>
 #include <qgsvectorlayer.h>
 
 class TestPaleoSources : public QObject {
@@ -187,6 +188,90 @@ private slots:
     QVERIFY(!proj->mapLayersByName(QStringLiteral("[DEM] 국토지리원_DEM.tif")).isEmpty());
     QVERIFY(!proj->mapLayersByName(QStringLiteral("[DEM] 광역지형도(채색+음영기복)")).isEmpty());
     QVERIFY(!proj->mapLayersByName(QStringLiteral("[DEM] 경사도")).isEmpty());
+    // 재호출 시에도 열린 레이어 잠금(Permission denied) 없이 정상 갱신되어야 한다.
+    QVERIFY(PaleoAnalysisRunner::registerDemWideLayers(
+        proj, nullptr, demTif, dir.filePath(QStringLiteral("survey.gpkg"))));
+    QVERIFY(PaleoAnalysisRunner::findPreferredDem(proj) != nullptr);
+    proj->clear();
+  }
+
+  void buildNgiiDemFromTopographic_interpolatesBareEarthDemAndFeedsPaleoPipeline() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString surveyGpkg = dir.filePath(QStringLiteral("survey.gpkg"));
+    QgsProject* proj = QgsProject::instance();
+    proj->clear();
+    proj->setCrs(QgsCoordinateReferenceSystem(QStringLiteral("EPSG:5187")));
+
+    // 3D 등고선(elevation 속성 포함)이 들어있는 수치지형도 레이어를 구성한다.
+    auto* topo = new QgsVectorLayer(QStringLiteral("MultiLineStringZ?crs=EPSG:5187"),
+                                    QStringLiteral("수치지형도"), QStringLiteral("memory"));
+    topo->dataProvider()->addAttributes({
+        QgsField(QStringLiteral("Layer"), QMetaType::Type::QString),
+        QgsField(QStringLiteral("elevation"), QMetaType::Type::Double),
+        QgsField(QStringLiteral("z_valid"), QMetaType::Type::Int),
+    });
+    topo->updateFields();
+    QgsFeatureList cFeats;
+    for (int i = 0; i < 6; ++i) {
+      const double y = 360000.0 + i * 100.0;
+      const double elev = 20.0 + i * 5.0;
+      QgsFeature f(topo->fields());
+      f.setGeometry(QgsGeometry::fromWkt(
+          QStringLiteral("MULTILINESTRING Z ((219000 %1 %2, 219300 %1 %2, 219600 %1 %2))")
+              .arg(y, 0, 'f', 1)
+              .arg(elev, 0, 'f', 1)));
+      f.setAttribute(QStringLiteral("Layer"), QStringLiteral("F0017111"));
+      f.setAttribute(QStringLiteral("elevation"), elev);
+      f.setAttribute(QStringLiteral("z_valid"), 1);
+      cFeats.append(f);
+    }
+    QVERIFY(topo->dataProvider()->addFeatures(cFeats));
+    topo->updateExtents();
+    QVERIFY(proj->addMapLayer(topo));
+
+    QString err;
+    const QString builtDem =
+        PaleoAnalysisRunner::buildNgiiDemFromTopographic(proj, nullptr, surveyGpkg, &err);
+    QVERIFY2(!builtDem.isEmpty(), qPrintable(err));
+    QVERIFY(QFileInfo::exists(builtDem));
+    QgsRasterLayer* ngiiDem = PaleoAnalysisRunner::findPreferredDem(proj);
+    QVERIFY(ngiiDem != nullptr);
+    QCOMPARE(ngiiDem->name(), QStringLiteral("[DEM] 국토지리원_DEM.tif"));
+
+    // 토양도·지질도·수계도·시추공 레이어를 올리고 runFullPipeline이 실제 공간 속성을 읽는지 검증한다.
+    auto* soil = new QgsVectorLayer(QStringLiteral("MultiPolygon?crs=EPSG:5187"),
+                                    QStringLiteral("토양도(흙토람)"), QStringLiteral("memory"));
+    soil->dataProvider()->addAttributes(
+        {QgsField(QStringLiteral("soil_type_geo"), QMetaType::Type::QString)});
+    soil->updateFields();
+    {
+      QgsFeature sf(soil->fields());
+      sf.setGeometry(QgsGeometry::fromWkt(QStringLiteral(
+          "MULTIPOLYGON(((219000 360000, 219600 360000, 219600 360500, 219000 360500, 219000 360000)))")));
+      sf.setAttribute(QStringLiteral("soil_type_geo"), QStringLiteral("08"));
+      QgsFeatureList sfList{sf};
+      QVERIFY(soil->dataProvider()->addFeatures(sfList));
+    }
+    QVERIFY(proj->addMapLayer(soil));
+
+    auto* river = new QgsVectorLayer(QStringLiteral("MultiPolygon?crs=EPSG:5187"),
+                                     QStringLiteral("수계도(하천망)"), QStringLiteral("memory"));
+    river->dataProvider()->addAttributes(
+        {QgsField(QStringLiteral("riv_nm"), QMetaType::Type::QString)});
+    river->updateFields();
+    {
+      QgsFeature rf(river->fields());
+      rf.setGeometry(QgsGeometry::fromWkt(QStringLiteral(
+          "MULTIPOLYGON(((219000 360000, 219600 360000, 219600 360040, 219000 360040, 219000 360000)))")));
+      rf.setAttribute(QStringLiteral("riv_nm"), QStringLiteral("북천"));
+      QgsFeatureList rfList{rf};
+      QVERIFY(river->dataProvider()->addFeatures(rfList));
+    }
+    QVERIFY(proj->addMapLayer(river));
+
+    const auto res = PaleoAnalysisRunner::runFullPipeline(proj, nullptr, surveyGpkg, nullptr);
+    QVERIFY(QString::fromUtf8(res.aoi_summary_text.c_str()).contains(QStringLiteral("북천")));
     proj->clear();
   }
 };

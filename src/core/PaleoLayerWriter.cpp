@@ -178,7 +178,21 @@ bool PaleoAnalysisRunner::registerDemWideLayers(QgsProject* project, QgsMapCanva
                                : QgsCoordinateReferenceSystem(QStringLiteral("EPSG:5187"));
   GDALAllRegister();
   CPLSetConfigOption("GDAL_FILENAME_IS_UTF8", "YES");
-  if (QFileInfo(sourceDemPath).canonicalFilePath() != QFileInfo(demOut).canonicalFilePath()) {
+
+  const bool sameDemPath =
+      QFileInfo::exists(demOut) &&
+      QFileInfo(sourceDemPath).canonicalFilePath() == QFileInfo(demOut).canonicalFilePath();
+  for (const QString& title :
+       {QStringLiteral("[DEM] 광역지형도(채색+음영기복)"), QStringLiteral("[DEM] 경사도")}) {
+    for (QgsMapLayer* l : project->mapLayersByName(title)) {
+      if (l) project->removeMapLayer(l->id());
+    }
+  }
+  if (!sameDemPath) {
+    for (QgsMapLayer* l : project->mapLayersByName(QStringLiteral("[DEM] 국토지리원_DEM.tif"))) {
+      if (l) project->removeMapLayer(l->id());
+    }
+    QFile::remove(demOut);
     const QByteArray dstWkt = workCrs.toWkt().toUtf8();
     const char* warpArgs[] = {"-t_srs", dstWkt.constData(), "-r", "bilinear",
                               "-overwrite", nullptr};
@@ -193,6 +207,8 @@ bool PaleoAnalysisRunner::registerDemWideLayers(QgsProject* project, QgsMapCanva
     }
     GDALWarpAppOptionsFree(wOpts);
   }
+  QFile::remove(wideOut);
+  QFile::remove(slopeOut);
   const QString activeDem = QFileInfo::exists(demOut) ? demOut : sourceDemPath;
   GDALDataset* ds = static_cast<GDALDataset*>(GDALOpen(activeDem.toUtf8().constData(), GA_ReadOnly));
   if (!ds) return false;

@@ -37,6 +37,15 @@ void MainWindow::openTopographicDownload() {
     auto* browser = new KaTopographicBrowser(this,QDir(directory).filePath(QStringLiteral("원본")));
     m_topographicBrowser = browser;
     if (!m_topographicImport) m_topographicImport = new KaTopographicImportDialog(m_canvas, this);
+    connect(
+        m_topographicImport, &KaTopographicImportDialog::referenceLayersChanged, this,
+        [this] {
+          if (!QStandardPaths::isTestModeEnabled()) {
+            PaleoAnalysisRunner::buildNgiiDemFromTopographic(QgsProject::instance(), m_canvas,
+                                                             m_surveyPath, nullptr);
+          }
+        },
+        Qt::UniqueConnection);
     auto* scope = new KaTopographicScopePanel(m_canvas, browser, m_topographicImport, browser,directory);
     if (auto* layout = qobject_cast<QVBoxLayout*>(browser->layout())) layout->insertWidget(0, scope);
     scope->hide();
@@ -119,6 +128,15 @@ void MainWindow::showTopographicFiles(const QString& folder) {
   showMapWorkspace();
   QSettings().setValue(QStringLiteral("topographic/folder"), QDir(folder).absolutePath());
   if (!m_topographicImport) m_topographicImport = new KaTopographicImportDialog(m_canvas, this);
+  connect(
+      m_topographicImport, &KaTopographicImportDialog::referenceLayersChanged, this,
+      [this] {
+        if (!QStandardPaths::isTestModeEnabled()) {
+          PaleoAnalysisRunner::buildNgiiDemFromTopographic(QgsProject::instance(), m_canvas,
+                                                           m_surveyPath, nullptr);
+        }
+      },
+      Qt::UniqueConnection);
   // Manually added sheets merge into the survey's topographic folder as well.
   if (!m_surveyPath.isEmpty() && QFileInfo::exists(m_surveyPath))
     m_topographicImport->setMergeDirectory(

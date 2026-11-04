@@ -103,8 +103,16 @@ QList<KigamPaleoService::PointItem> KigamPaleoService::parseUnderwaterGeoJson(
         f.value(QStringLiteral("geometry")).toObject().value(QStringLiteral("coordinates")).toArray();
     PointItem item;
     if (coords.size() >= 2) {
-      item.lon = coords[0].toDouble();
-      item.lat = coords[1].toDouble();
+      const double c0 = coords[0].toDouble();
+      const double c1 = coords[1].toDouble();
+      if (c0 > 200.0 || c1 > 200.0) {
+        item.tmX5186 = c0;
+        item.tmY5186 = c1;
+        item.hasTm5186 = true;
+      } else {
+        item.lon = c0;
+        item.lat = c1;
+      }
     }
     item.kind = QStringLiteral("지하수위");
     item.name = p.value(QStringLiteral("시험정공번")).toString().trimmed();
@@ -115,7 +123,7 @@ QList<KigamPaleoService::PointItem> KigamPaleoService::parseUnderwaterGeoJson(
                        .arg(item.altitudeM, 0, 'f', 1)
                        .arg(item.waterGlM, 0, 'f', 1)
                        .arg(aquifer.isEmpty() ? QStringLiteral("관측정") : aquifer);
-    if (item.lon != 0.0 && item.lat != 0.0) out.append(item);
+    if (item.hasTm5186 || (item.lon != 0.0 && item.lat != 0.0)) out.append(item);
   }
   return out;
 }
