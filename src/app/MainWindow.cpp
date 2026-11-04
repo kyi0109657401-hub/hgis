@@ -30,6 +30,7 @@
 #include "KaEditErrors.h"
 #include "core/BasemapDsm.h"
 #include "core/DemAnalyzer.h"
+#include "core/PaleoAnalysisRunner.h"
 #include "core/TilePackService.h"
 #include "core/TrenchGridGenerator.h"
 #include "KaAboveLabelsOverlay.h"
@@ -1195,6 +1196,14 @@ bool MainWindow::routeEditKeyToActiveStudio(bool isDelete) {
     else m_terrain3dLayoutStudio->undoLastChange();
     return true;
   }
+  if (m_viewTabs && m_viewTabs->currentWidget() &&
+      m_viewTabs->currentWidget()->objectName() == QLatin1String("paleoStudio")) {
+    if (isDelete) {
+      if (auto* tree = m_viewTabs->currentWidget()->findChild<QgsLayerTreeView*>())
+        removeLayersFromTree(tree);
+    }
+    return true;
+  }
   if (!m_viewTabs || !m_drawingStudio) return false;
   if (m_viewTabs->currentWidget() != m_drawingStudio) return false;
   if (isDelete)
@@ -1698,6 +1707,8 @@ void MainWindow::importDemElevationRaster() {
     if (m_btnDem) m_btnDem->setChecked(false);
     return;
   }
+  PaleoAnalysisRunner::registerDemWideLayers(QgsProject::instance(), m_canvas, path, m_surveyPath,
+                                             nullptr);
   if (m_btnDem) m_btnDem->setChecked(true);
   statusBar()->showMessage(QStringLiteral("국토지리원 DEM을 올렸습니다. 범례에 높이(m)가 표시됩니다."), 6000);
 #else

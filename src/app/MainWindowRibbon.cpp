@@ -425,7 +425,7 @@ void MainWindow::buildMenus() {
   connect(m_btnDem, &QToolButton::clicked, this, [this]() {
     QTimer::singleShot(0, this, [this]() { syncThematicButtons(); });
   });
-  ribbon->addWidget(QStringLiteral("basemap"), m_btnDem);
+  ribbon->addWidget(QStringLiteral("fetch"), m_btnDem);
   auto* contour = new QToolButton(ribbon);
   contour->setObjectName(QStringLiteral("btnSurveyContour"));
   contour->setIcon(KaIcons::icon(QStringLiteral("survey_contour")));

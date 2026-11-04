@@ -1,15 +1,15 @@
 #include "KaPaleoMenu.h"
+#include "KaDrawingStudio.h"
 #include "KaIcons.h"
+#include "KaPaleoStudio.h"
+#include "KaTheme.h"
 #include "KaUserError.h"
 #include "MainWindow.h"
-#include "core/BasemapDsm.h"
 #include "core/GeoInfoBoreholeService.h"
 #include "core/KaLogExcept.h"
 #include "core/KigamPaleoService.h"
 #include "core/LayerOps.h"
-#include "core/PaleoDemClassifier.h"
-#include "core/PaleoLandformService.h"
-#include "core/SoilMapService.h"
+#include "core/PaleoAnalysisRunner.h"
 
 #include <QAction>
 #include <QDialog>
@@ -19,9 +19,10 @@
 #include <QLabel>
 #include <QMenu>
 #include <QMessageBox>
-#include <QPushButton>
 #include <QStandardPaths>
 #include <QStatusBar>
+#include <QTabWidget>
+#include <QTimer>
 #include <QToolButton>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -34,12 +35,8 @@
 #include <qgscoordinatereferencesystem.h>
 #include <qgscoordinatetransform.h>
 #include <qgsexception.h>
-#include <qgslayertree.h>
-#include <qgslayertreelayer.h>
-#include <qgslayertreeview.h>
 #include <qgsmapcanvas.h>
 #include <qgsproject.h>
-#include <qgsvectorlayer.h>
 #endif
 
 namespace {
@@ -61,14 +58,12 @@ void openPaleoPortalDialog(QWidget* parent, const QString& title, const QUrl& st
           : QFileInfo(surveyPath).absoluteDir().filePath(QStringLiteral("지형분석"));
   QDir().mkpath(saveDir);
 
-  auto* topRow = new QHBoxLayout();
   auto* info = new QLabel(
       QStringLiteral("로그인 상태가 앱 안에 유지됩니다. 내려받는 파일은 조사 폴더의 「지형분석」(%1)에 저장됩니다.")
           .arg(QDir::toNativeSeparators(saveDir)),
       dlg);
   info->setWordWrap(true);
-  topRow->addWidget(info, 1);
-  layout->addLayout(topRow);
+  layout->addWidget(info);
 
   static QWebEngineProfile* s_profile = nullptr;
   if (!s_profile) {
@@ -120,17 +115,17 @@ void install(QToolButton* button, QWidget* host, const std::function<void()>& tr
     });
   };
   addItem(QStringLiteral("actionPaleoRun"),
-          QStringLiteral("고지형 가설 판독 (토양 + 공개 DEM·수계·시추 결합)"));
+          QStringLiteral("「고지형분석」 전용 탭 열기 및 반경 10km 종합 분석 실행"));
   menu->addSeparator();
   addItem(QStringLiteral("actionPaleoGeoInfo"),
-          QStringLiteral("국토지반정보 시추주상도 내려받기 — 현재 화면 범위"));
+          QStringLiteral("국토지반정보 시추주상도 내려받기 (반경 10km)"));
   addItem(QStringLiteral("actionPaleoKigam"),
-          QStringLiteral("KIGAM 단층·지하수위·단구연대 내려받기 — 현재 화면 범위"));
+          QStringLiteral("KIGAM 단층·지하수위·단구연대 내려받기 (반경 10km)"));
   menu->addSeparator();
   addItem(QStringLiteral("actionPaleoPortalGeoInfo"),
-          QStringLiteral("국토지반정보 포털 열기 (geoinfo.or.kr 로그인·검색유통)…"));
+          QStringLiteral("국토지반정보 포털 열기 (geoinfo.or.kr)…"));
   addItem(QStringLiteral("actionPaleoPortalKigam"),
-          QStringLiteral("KIGAM 지오빅데이터 포털 열기 (data.kigam.re.kr 원도·도폭)…"));
+          QStringLiteral("KIGAM 지오빅데이터 포털 열기 (data.kigam.re.kr)…"));
 
   button->setMenu(menu);
   QObject::connect(button, &QToolButton::customContextMenuRequested, host,
@@ -145,6 +140,7 @@ void MainWindow::startPaleoLandform() {
   QString actionName = m_btnPaleo ? m_btnPaleo->property("paleoAction").toString() : QString();
   if (m_btnPaleo) m_btnPaleo->setProperty("paleoAction", QString());
   if (actionName.isEmpty() && sender()) actionName = sender()->objectName();
+
   if (actionName == QLatin1String("actionPaleoPortalGeoInfo")) {
     openPaleoPortalDialog(this, QStringLiteral("국토지반정보 포털시스템 (시추·주상도 검색·유통)"),
                           QUrl(QStringLiteral("https://www.geoinfo.or.kr/index.do?cntyn=0")),
@@ -158,127 +154,61 @@ void MainWindow::startPaleoLandform() {
     return;
   }
 
-  if (m_surveyPath.isEmpty()) {
-    QMessageBox::information(this, QStringLiteral("고지형"),
-                             QStringLiteral("먼저 「새 조사」로 저장 위치를 만드세요.\n"
-                                            "그다음 조사구역으로 확대한 뒤 다시 「고지형」을 누르면 "
-                                            "흙토람 분포지형과 시추·지질 자료가 깔립니다."));
-    return;
-  }
-  if (!m_canvas) return;
-  QgsProject* proj = QgsProject::instance();
-  LayerOps::clampCanvasToThematicScale(m_canvas);
-
-  QgsRectangle ext5186 = m_canvas->extent();
-  const QgsCoordinateReferenceSystem crs5186(QStringLiteral("EPSG:5186"));
-  const QgsCoordinateReferenceSystem canvasCrs = m_canvas->mapSettings().destinationCrs();
-  if (canvasCrs.isValid() && canvasCrs != crs5186) {
-    try {
-      const QgsCoordinateTransform tr(canvasCrs, crs5186, QgsProject::instance());
-      ext5186 = tr.transformBoundingBox(ext5186);
-    } catch (const QgsException&) {
-      KA_LOG_EXCEPT();
-      KaUserError::warn(this, {QStringLiteral("고지형"), QStringLiteral("고지형을 올리지 못했습니다"),
-                               QStringLiteral("화면 범위를 좌표 변환하지 못했습니다."),
-                               QStringLiteral("작업 좌표계를 확인한 뒤 다시 누르세요.")});
+  if (actionName == QLatin1String("actionPaleoGeoInfo") ||
+      actionName == QLatin1String("actionPaleoKigam")) {
+    if (m_surveyPath.isEmpty()) {
+      QMessageBox::information(this, QStringLiteral("고지형분석"),
+                               QStringLiteral("먼저 「새 조사」로 저장 위치를 만드세요."));
       return;
     }
-  }
-
-  const QString surveyDir = QFileInfo(m_surveyPath).absolutePath();
-  if (actionName == QLatin1String("actionPaleoGeoInfo")) {
-    const QString outGpkg = QDir(surveyDir).filePath(QStringLiteral("시추주상도_국토지반정보.gpkg"));
-    startReferenceDownload(ReferenceMapKind::GeoInfoBorehole, ext5186, outGpkg);
-    return;
-  }
-  if (actionName == QLatin1String("actionPaleoKigam")) {
-    const QString outGpkg = QDir(surveyDir).filePath(QStringLiteral("고지형_KIGAM.gpkg"));
-    startReferenceDownload(ReferenceMapKind::KigamPaleo, ext5186, outGpkg);
-    return;
-  }
-
-  QgsVectorLayer* soil = PaleoLandformService::findSoilTerrainLayer(proj);
-  if (!soil) {
-    if (ext5186.width() > SoilMapService::maxSpanMeters() ||
-        ext5186.height() > SoilMapService::maxSpanMeters()) {
-      QMessageBox::information(
-          this, QStringLiteral("고지형"),
-          QStringLiteral("지금 화면이 너무 넓습니다. 조사구역(한 변 %1km 이하)으로 확대한 뒤 "
-                         "다시 「고지형」을 누르세요.\n"
-                         "전국·시도 화면에는 분포지형을 깔지 않습니다.")
-              .arg(SoilMapService::maxSpanMeters() / 1000.0, 0, 'f', 0));
-      return;
+    QgsProject* proj = QgsProject::instance();
+    const QgsRectangle boxWork =
+        PaleoAnalysisRunner::surveyExtentRadius(proj, m_canvas, PaleoAnalysisRunner::kRadiusMeters);
+    QgsRectangle ext5186 = boxWork;
+    const QgsCoordinateReferenceSystem crs5186(QStringLiteral("EPSG:5186"));
+    if (proj->crs().isValid() && proj->crs() != crs5186) {
+      try {
+        const QgsCoordinateTransform tr(proj->crs(), crs5186, proj->transformContext());
+        ext5186 = tr.transformBoundingBox(boxWork);
+      } catch (...) {
+        KA_LOG_EXCEPT();
+      }
     }
-    const QString outGpkg = QDir(surveyDir).filePath(QStringLiteral("토양도_흙토람.gpkg"));
-    startReferenceDownload(ReferenceMapKind::PaleoSoil, ext5186, outGpkg);
-    return;
-  }
-  PaleoLandformService::applyCandidateEmphasis(soil);
-  if (QgsLayerTreeLayer* n = proj->layerTreeRoot()->findLayer(soil->id()))
-    n->setItemVisibilityChecked(true);
-  if (m_layerTree) m_layerTree->setCurrentLayer(soil);
-
-  QString err;
-  QgsVectorLayer* layer = PaleoLandformService::ensureInterpretationLayer(proj, m_surveyPath, &err);
-  if (!layer) {
-    notify(Notice::Warning, QStringLiteral("고지형"),
-           err.isEmpty() ? QStringLiteral("판독 레이어를 만들지 못했습니다.") : err);
-    return;
-  }
-  const PaleoLandformService::SeedResult seeded =
-      PaleoLandformService::seedInterpretationFromSoil(soil, layer, &err);
-  const int enriched = PaleoDemClassifier::enrichInterpretationLayer(proj, layer);
-  PaleoLandformService::applyInterpretationStyle(layer);
-  if (QgsLayerTreeLayer* pn = proj->layerTreeRoot()->findLayer(layer->id()))
-    pn->setItemVisibilityChecked(true);
-  if (QgsRasterLayer* dem = BasemapDsm::findDem(proj)) {
-    if (dem->opacity() > 0.6) {
-      dem->setOpacity(0.55);
-      dem->triggerRepaint();
+    const QString surveyDir = QFileInfo(m_surveyPath).absolutePath();
+    if (actionName == QLatin1String("actionPaleoGeoInfo")) {
+      startReferenceDownload(ReferenceMapKind::GeoInfoBorehole, ext5186,
+                             QDir(surveyDir).filePath(QStringLiteral("시추주상도_국토지반정보.gpkg")));
+    } else {
+      startReferenceDownload(ReferenceMapKind::KigamPaleo, ext5186,
+                             QDir(surveyDir).filePath(QStringLiteral("고지형_KIGAM.gpkg")));
     }
+    return;
   }
-  beginEdit(layer);
-  if (!m_referenceDownload && !proj->property("paleoKigamAttempted").toBool()) {
-    proj->setProperty("paleoKigamAttempted", true);
-    const QString outGpkg = QDir(surveyDir).filePath(QStringLiteral("고지형_KIGAM.gpkg"));
-    startReferenceDownload(ReferenceMapKind::KigamPaleo, ext5186, outGpkg);
+
+  if (!m_viewTabs) return;
+  auto* studio = findChild<KaPaleoStudio*>(QStringLiteral("paleoStudio"));
+  if (!studio) {
+    studio = new KaPaleoStudio(QgsProject::instance(), m_canvas, this);
+    studio->setAttribute(Qt::WA_DeleteOnClose, false);
+    connect(studio, &KaPaleoStudio::requestApplyToDrawingSheet, this, [this, studio] {
+      openLayoutDesigner();
+      PaleoAnalysisRunner::applyEvidenceToSheet(QgsProject::instance(), studio->lastResult());
+      if (m_drawingStudio) m_drawingStudio->refreshMapFromProject();
+      statusBar()->showMessage(
+          QStringLiteral("도면(조판)에 조사구역 반경 10km 고지형 판독 근거 및 기본층서 해설 상자를 추가했습니다."),
+          8000);
+    });
   }
-  if (seeded.added > 0) {
-    const QString extra =
-        enriched > 0
-            ? QStringLiteral(" (공개 DEM·하천·시추주상도 지표 %1건 반영)").arg(enriched)
-            : QString();
-    notify(Notice::Success, QStringLiteral("고지형"),
-           QStringLiteral("흙토람 분포지형에서 가설 %1개를 자동으로 깔았습니다%2. 확정이 아닙니다.")
-               .arg(seeded.added)
-               .arg(extra));
-    QMessageBox::information(
-        this, QStringLiteral("고지형"),
-        QStringLiteral("흙토람 분포지형에서 가설 면을 자동으로 깔았습니다%1.\n\n"
-                       "선상지 · 해성평탄 · 하안단구는 토양 구분을 옮긴 것입니다.\n"
-                       "하성평탄은 안쪽을 구하도, 가장자리를 자연제방 가설로 나누며,\n"
-                       "켜 둔 공개 DEM·수계도·국토지반정보 시추주상도가 있으면 표고·비고·경사·충적층 두께를 판독 근거에 함께 적습니다.\n\n"
-                       "옛 지형이 자동으로 복원된 것은 아닙니다. "
-                       "틀린 면은 지우고 고치세요. 확정이 아닙니다.")
-            .arg(extra));
-    statusBar()->showMessage(
-        QStringLiteral("고지형 가설 %1개%2 — 확정 아님. 좌클릭으로 추가, 우클릭으로 완료")
-            .arg(seeded.added)
-            .arg(extra),
-        0);
-  } else {
-    notify(Notice::Success, QStringLiteral("고지형"),
-           QStringLiteral("분포지형을 올렸습니다. 진한 색이 입지 후보"
-                          "(곡간·선상·해성·하성평탄·홍적대지)입니다."));
-    QMessageBox::information(
-        this, QStringLiteral("고지형"),
-        QStringLiteral("지도에 색 면이 생겼으면 그게 고지형입니다.\n\n"
-                       "진한 색 = 유적 입지 후보 (곡간·선상·해성평탄·하성평탄·홍적대지)\n"
-                       "연한 색 = 산지·구릉 등\n\n"
-                       "옛 지형이 자동으로 복원된 것은 아닙니다. "
-                       "이제 그 위에 구하도·자연제방 가설을 그리세요. 확정이 아닙니다."));
-    statusBar()->showMessage(
-        QStringLiteral("고지형 가설 — 진한 색이 입지 후보. 좌클릭으로 그리고 우클릭으로 완료"), 0);
+  studio->setSurveyPath(m_surveyPath);
+  studio->setParent(m_viewTabs, Qt::Widget);
+  if (m_viewTabs->indexOf(studio) < 0) {
+    m_viewTabs->addTab(studio, KaIcons::icon(QStringLiteral("paleo"), KaTheme::tokens().inkMuted),
+                       QStringLiteral("고지형분석"));
+  }
+  m_viewTabs->setCurrentWidget(studio);
+  hideSubTools();
+  if (studio->lastResult().aoi_summary_text.empty()) {
+    QTimer::singleShot(0, studio, &KaPaleoStudio::runAnalysis);
   }
 #else
   QMessageBox::information(this, QStringLiteral("스텁"), QStringLiteral("고지형 시뮬레이션"));

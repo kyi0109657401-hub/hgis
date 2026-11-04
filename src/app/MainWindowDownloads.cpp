@@ -5,6 +5,7 @@
 #include "core/BasemapDsm.h"
 #include "core/DemDownloadService.h"
 #include "core/LayerOps.h"
+#include "core/PaleoAnalysisRunner.h"
 #include "core/ReferenceStorage.h"
 #include <QDir>
 #include <QFileInfo>
@@ -119,10 +120,13 @@ void MainWindow::startDemDownload() {
   if (!m_canvas) return;
   const QString dir = referenceDownloadFolder(QStringLiteral("DEM"));
   if (dir.isEmpty()) return;
-  QgsRectangle extent = m_canvas->extent();
+  QgsRectangle extent = PaleoAnalysisRunner::surveyExtentRadius(QgsProject::instance(), m_canvas, 5000.0);
+  const QgsCoordinateReferenceSystem workCrs =
+      QgsProject::instance()->crs().isValid() ? QgsProject::instance()->crs()
+                                              : m_canvas->mapSettings().destinationCrs();
   const QgsCoordinateReferenceSystem wgs(QStringLiteral("EPSG:4326"));
   try {
-    const QgsCoordinateTransform transform(m_canvas->mapSettings().destinationCrs(), wgs, QgsProject::instance());
+    const QgsCoordinateTransform transform(workCrs, wgs, QgsProject::instance());
     extent = transform.transformBoundingBox(extent);
   } catch (const QgsException&) {
     notify(Notice::Warning, QStringLiteral("DEM"), QStringLiteral("화면의 좌표 범위를 계산하지 못했습니다. 조사 좌표계를 확인하고 다시 실행하세요."));
@@ -140,6 +144,8 @@ void MainWindow::startDemDownload() {
       return;
     }
     result.retainFiles();
+    PaleoAnalysisRunner::registerDemWideLayers(QgsProject::instance(), window->m_canvas,
+                                               result.rasterUri, window->m_surveyPath, nullptr);
     for (QgsMapLayer* layer : QgsProject::instance()->mapLayers()) {
       // By identity (ka_hgis/reference_kind = dem), not by the title "DEM".
       if (!BasemapDsm::isDemLayer(layer) || layer->source() != result.rasterUri) continue;

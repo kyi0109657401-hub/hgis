@@ -652,7 +652,8 @@ void MainWindow::onViewTabCloseRequested(int index) {
     return;
   QWidget* w = m_viewTabs->widget(index);
   if (!w || (w != m_drawingStudio && w != m_terrain3dStudio &&
-             w != m_terrain3dLayoutStudio && w != m_topographicBrowser.data()))
+             w != m_terrain3dLayoutStudio && w != m_topographicBrowser.data() &&
+             w->objectName() != QLatin1String("paleoStudio")))
     return;
   m_viewTabs->removeTab(index);
   w->hide();

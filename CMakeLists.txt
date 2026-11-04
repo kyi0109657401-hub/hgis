@@ -230,6 +230,14 @@ add_library(ka_core STATIC
   src/core/KigamPaleoService.cpp
   src/core/KigamPaleoLayer.cpp
   src/core/PaleoDemClassifier.cpp
+  src/core/HgisPaleoEngine.h
+  src/core/HgisPaleoBorehole.cpp
+  src/core/HgisPaleoTerrain.cpp
+  src/core/HgisPaleoPipeline.cpp
+  src/core/PaleoAnalysisRunner.h
+  src/core/PaleoAnalysisRunner.cpp
+  src/core/PaleoAnalysisPipeline.cpp
+  src/core/PaleoLayerWriter.cpp
   src/core/GeologyMapService.cpp
   src/core/RiverMapService.cpp
   src/core/Terrain3dService.cpp
@@ -417,6 +425,9 @@ add_executable(ka-hgis
     src/app/MainWindowOverlay.cpp
     src/app/MainWindowPaleo.cpp
     src/app/KaPaleoMenu.h
+    src/app/KaPaleoStudio.h
+    src/app/KaPaleoStudio.cpp
+    src/app/KaPaleoCrossSectionWidget.cpp
     src/app/MainWindowFiles.cpp
     src/app/MainWindowDownloads.cpp
     src/app/MainWindowExport.cpp

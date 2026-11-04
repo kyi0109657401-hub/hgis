@@ -1,5 +1,7 @@
 #include "core/GeoInfoBoreholeService.h"
+#include "core/HgisPaleoEngine.h"
 #include "core/KigamPaleoService.h"
+#include "core/PaleoAnalysisRunner.h"
 #include "core/PaleoDemClassifier.h"
 #include "core/PaleoLandformService.h"
 
@@ -139,6 +141,52 @@ private slots:
     QVERIFY2(err.isEmpty(), qPrintable(err));
     QVERIFY(res.added >= 1);
     QVERIFY(paleo->featureCount() >= 2);
+    proj->clear();
+  }
+
+  void hgisPaleoEngine_runsFullPipelineAndRegistersDemLayers() {
+    using namespace hgis::paleo;
+    GridTransform tf{200000.0, 500000.0, 10.0, 32, 32};
+    const size_t n = 32 * 32;
+    std::vector<double> zCurr(n, 16.0);
+    std::vector<SoilLandformCode> soilGrid(n, SoilLandformCode::FluvialPlain);
+    std::vector<GeologyCode> geolGrid(n, GeologyCode::QaAlluvium);
+    std::vector<uint8_t> riverMask(n, 0);
+    std::vector<uint8_t> aoiMask(n, 1);
+    riverMask[0] = 1;
+
+    std::vector<BoreholeRawInput> bhs = {
+        {"BH-1",
+         200150.0,
+         499850.0,
+         16.8,
+         3.6,
+         {{0.0, 2.2, "성토층", "SM", "매립", 6.0},
+          {2.2, 5.4, "충적층", "SM", "모래 및 유기물", 9.0},
+          {5.4, 8.5, "풍화토", "SC", "풍화대", 50.0}}},
+    };
+
+    const PaleoAnalysisResult out =
+        HgisPaleoEngine::run_pipeline(zCurr, tf, bhs, soilGrid, geolGrid, riverMask, aoiMask,
+                                      {200160.0, 499840.0}, "형산강", "06 하성평탄지", "Qa 충적층");
+    QCOMPARE(out.parsed_boreholes.size(), size_t(1));
+    QVERIFY(out.parsed_boreholes[0].has_organic_inclusion);
+    QCOMPARE(out.paleo_rgba_buffer.size(), n * 4);
+    QCOMPARE(out.center_cross_section.dist_m.size(), size_t(32));
+    QVERIFY(QString::fromUtf8(out.aoi_summary_text.c_str()).contains(QStringLiteral("형산강")));
+    QVERIFY(QString::fromUtf8(out.aoi_summary_text.c_str()).contains(QStringLiteral("반경 10km")));
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString demTif = dir.filePath(QStringLiteral("sample_dem.tif"));
+    QVERIFY(PaleoAnalysisRunner::writeFloatGeoTiff(demTif, tf, QString(), zCurr));
+    QgsProject* proj = QgsProject::instance();
+    proj->clear();
+    QVERIFY(PaleoAnalysisRunner::registerDemWideLayers(
+        proj, nullptr, demTif, dir.filePath(QStringLiteral("survey.gpkg"))));
+    QVERIFY(!proj->mapLayersByName(QStringLiteral("[DEM] 국토지리원_DEM.tif")).isEmpty());
+    QVERIFY(!proj->mapLayersByName(QStringLiteral("[DEM] 광역지형도(채색+음영기복)")).isEmpty());
+    QVERIFY(!proj->mapLayersByName(QStringLiteral("[DEM] 경사도")).isEmpty());
     proj->clear();
   }
 };
