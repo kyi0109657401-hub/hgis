@@ -225,6 +225,11 @@ add_library(ka_core STATIC
   src/core/TilePackService.cpp
   src/core/SoilMapService.cpp
   src/core/PaleoLandformService.cpp
+  src/core/GeoInfoBoreholeService.cpp
+  src/core/GeoInfoBoreholeParser.cpp
+  src/core/KigamPaleoService.cpp
+  src/core/KigamPaleoLayer.cpp
+  src/core/PaleoDemClassifier.cpp
   src/core/GeologyMapService.cpp
   src/core/RiverMapService.cpp
   src/core/Terrain3dService.cpp
@@ -410,6 +415,8 @@ add_executable(ka-hgis
     src/app/MainWindowTrench.cpp
     src/app/MainWindowAlign.cpp
     src/app/MainWindowOverlay.cpp
+    src/app/MainWindowPaleo.cpp
+    src/app/KaPaleoMenu.h
     src/app/MainWindowFiles.cpp
     src/app/MainWindowDownloads.cpp
     src/app/MainWindowExport.cpp
@@ -2465,6 +2472,15 @@ if(KA_HGIS_BUILD_TESTS)
   set_target_properties(ka_edit_buffer_summary_tests PROPERTIES WIN32_EXECUTABLE FALSE)
   ka_add_qtest(edit_buffer_summary ka_edit_buffer_summary_tests)
   set_tests_properties(edit_buffer_summary PROPERTIES
+    ENVIRONMENT "GDAL_DATA=${OSGEO4W_ROOT}/apps/gdal-dev/share/gdal;PATH=${_ka_path_esc};QGIS_PREFIX_PATH=${QGIS_PREFIX_PATH};QT_QPA_PLATFORM=offscreen" TIMEOUT 90)
+  add_executable(ka_paleo_sources_tests tests/test_paleo_sources.cpp)
+  target_link_libraries(ka_paleo_sources_tests PRIVATE ${KA_TEST_LIBS})
+  target_include_directories(ka_paleo_sources_tests PRIVATE ${KA_INCLUDES} ${CMAKE_SOURCE_DIR}/src)
+  target_link_directories(ka_paleo_sources_tests PRIVATE ${KA_LIBDIRS})
+  target_compile_definitions(ka_paleo_sources_tests PRIVATE ${KA_TEST_DEFS})
+  set_target_properties(ka_paleo_sources_tests PROPERTIES WIN32_EXECUTABLE FALSE)
+  ka_add_qtest(paleo_sources ka_paleo_sources_tests)
+  set_tests_properties(paleo_sources PROPERTIES
     ENVIRONMENT "GDAL_DATA=${OSGEO4W_ROOT}/apps/gdal-dev/share/gdal;PATH=${_ka_path_esc};QGIS_PREFIX_PATH=${QGIS_PREFIX_PATH};QT_QPA_PLATFORM=offscreen" TIMEOUT 90)
 endif()
 

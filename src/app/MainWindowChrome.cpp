@@ -14,6 +14,7 @@
 #include "KaInspectorStyle.h"
 #include "KaLayerOpacityRail.h"
 #include "KaMapPagePlate.h"
+#include "KaPaleoMenu.h"
 #include "KaShellFocus.h"
 #include "KaStartPage.h"
 #include "KaStatusBar.h"
@@ -208,6 +209,7 @@ void MainWindow::setupStrataShell() {
   };
   connect(QgsProject::instance(), &QgsProject::layersAdded, this, watch);
   watch(QgsProject::instance()->mapLayers().values());
+  KaPaleoMenu::install(m_btnPaleo, this, [this] { startPaleoLandform(); });
   syncShellChips();
   syncBasemapCard();
 #endif

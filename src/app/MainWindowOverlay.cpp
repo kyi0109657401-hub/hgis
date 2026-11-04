@@ -46,6 +46,9 @@
 #include "core/SurveyStorage.h"
 #include "core/SurveySession.h"
 #include "core/GeorefService.h"
+#include "core/GeoInfoBoreholeService.h"
+#include "core/KigamPaleoService.h"
+#include "core/PaleoDemClassifier.h"
 #include "core/BufferAnalysis.h"
 #include "core/ChecklistEngine.h"
 #include "core/SurveyProjectFactory.h"
@@ -340,100 +343,6 @@ void MainWindow::toggleDemMap() {
 #endif
 }
 
-void MainWindow::startPaleoLandform() {
-#if KA_HGIS_HAS_QGIS
-  if (m_isOpeningSurvey || m_closingWindow) return;
-  if (m_surveyPath.isEmpty()) {
-    QMessageBox::information(this, QStringLiteral("고지형"),
-                             QStringLiteral("먼저 「새 조사」로 저장 위치를 만드세요.\n"
-                                            "그다음 조사구역으로 확대한 뒤 다시 「고지형」을 누르면 "
-                                            "흙토람 분포지형이 깔립니다."));
-    return;
-  }
-  if (!m_canvas) return;
-  QgsProject* proj = QgsProject::instance();
-  LayerOps::clampCanvasToThematicScale(m_canvas);
-
-  QgsVectorLayer* soil = PaleoLandformService::findSoilTerrainLayer(proj);
-  if (!soil) {
-    QgsRectangle ext = m_canvas->extent();
-    const QgsCoordinateReferenceSystem crs5186(QStringLiteral("EPSG:5186"));
-    const QgsCoordinateReferenceSystem canvasCrs = m_canvas->mapSettings().destinationCrs();
-    if (canvasCrs.isValid() && canvasCrs != crs5186) {
-      try {
-        const QgsCoordinateTransform tr(canvasCrs, crs5186, QgsProject::instance());
-        ext = tr.transformBoundingBox(ext);
-      } catch (const QgsException&) {
-        KaUserError::warn(this, {QStringLiteral("고지형"), QStringLiteral("고지형을 올리지 못했습니다"),
-                                 QStringLiteral("화면 범위를 좌표 변환하지 못했습니다."), QStringLiteral("작업 좌표계를 확인한 뒤 다시 누르세요.")});
-        return;
-      }
-    }
-    if (ext.width() > SoilMapService::maxSpanMeters() ||
-        ext.height() > SoilMapService::maxSpanMeters()) {
-      QMessageBox::information(
-          this, QStringLiteral("고지형"),
-          QStringLiteral("지금 화면이 너무 넓습니다. 조사구역(한 변 %1km 이하)으로 확대한 뒤 "
-                         "다시 「고지형」을 누르세요.\n"
-                         "전국·시도 화면에는 분포지형을 깔지 않습니다.")
-              .arg(SoilMapService::maxSpanMeters() / 1000.0, 0, 'f', 0));
-      return;
-    }
-    const QString dir = QFileInfo(m_surveyPath).absolutePath();
-    const QString outGpkg = QDir(dir).filePath(QStringLiteral("토양도_흙토람.gpkg"));
-    startReferenceDownload(ReferenceMapKind::PaleoSoil, ext, outGpkg);
-    return; // 같은 조사의 토양도가 준비된 뒤 판독 작업을 이어 간다.
-  }
-  PaleoLandformService::applyCandidateEmphasis(soil);
-  if (QgsLayerTreeLayer* n = proj->layerTreeRoot()->findLayer(soil->id()))
-    n->setItemVisibilityChecked(true);
-  if (m_layerTree) m_layerTree->setCurrentLayer(soil);
-
-  QString err;
-  QgsVectorLayer* layer =
-      PaleoLandformService::ensureInterpretationLayer(proj, m_surveyPath, &err);
-  if (!layer) {
-    notify(Notice::Warning, QStringLiteral("고지형"),
-           err.isEmpty() ? QStringLiteral("판독 레이어를 만들지 못했습니다.") : err);
-    return;
-  }
-  const PaleoLandformService::SeedResult seeded =
-      PaleoLandformService::seedInterpretationFromSoil(soil, layer, &err);
-  beginEdit(layer);
-  if (seeded.added > 0) {
-    notify(Notice::Success, QStringLiteral("고지형"),
-           QStringLiteral("흙토람 분포지형에서 가설 %1개를 자동으로 깔았습니다. 확정이 아닙니다.")
-               .arg(seeded.added));
-    QMessageBox::information(
-        this, QStringLiteral("고지형"),
-        QStringLiteral("흙토람 분포지형에서 가설 면을 자동으로 깔았습니다.\n\n"
-                       "선상지 · 해성평탄 · 하안단구는 토양 구분을 옮긴 것입니다.\n"
-                       "하성평탄은 안쪽을 구하도, 가장자리를 자연제방 가설로 나눕니다.\n\n"
-                       "옛 지형이 자동으로 복원된 것은 아닙니다. "
-                       "틀린 면은 지우고 고치세요. 확정이 아닙니다."));
-    statusBar()->showMessage(
-        QStringLiteral("고지형 가설 %1개 — 확정 아님. 좌클릭으로 추가, 우클릭으로 완료")
-            .arg(seeded.added),
-        0);
-  } else {
-    notify(Notice::Success, QStringLiteral("고지형"),
-           QStringLiteral("분포지형을 올렸습니다. 진한 색이 입지 후보"
-                          "(곡간·선상·해성·하성평탄·홍적대지)입니다."));
-    QMessageBox::information(
-        this, QStringLiteral("고지형"),
-        QStringLiteral("지도에 색 면이 생겼으면 그게 고지형입니다.\n\n"
-                       "진한 색 = 유적 입지 후보 (곡간·선상·해성평탄·하성평탄·홍적대지)\n"
-                       "연한 색 = 산지·구릉 등\n\n"
-                       "옛 지형이 자동으로 복원된 것은 아닙니다. "
-                       "이제 그 위에 구하도·자연제방 가설을 그리세요. 확정이 아닙니다."));
-    statusBar()->showMessage(
-        QStringLiteral("고지형 가설 — 진한 색이 입지 후보. 좌클릭으로 그리고 우클릭으로 완료"), 0);
-  }
-#else
-  QMessageBox::information(this, QStringLiteral("스텁"), QStringLiteral("고지형 시뮬레이션"));
-#endif
-}
-
 // 흙토람 공개 지도서버(국립농업과학원 GeoServer)에서 현재 화면 범위의
 // 정밀토양도를 내려받아 분포지형 공식 색으로 겹친다. 신청·키가 필요 없다.
 void MainWindow::downloadSoilTerrain() {
@@ -608,7 +517,9 @@ void MainWindow::startReferenceDownload(ReferenceMapKind kind, const QgsRectangl
     return;
   }
   const QString title = (kind == ReferenceMapKind::Soil || kind == ReferenceMapKind::PaleoSoil) ? QStringLiteral("토양도")
-      : kind == ReferenceMapKind::Geology ? QStringLiteral("지질도") : QStringLiteral("수계도");
+      : kind == ReferenceMapKind::Geology ? QStringLiteral("지질도")
+      : kind == ReferenceMapKind::GeoInfoBorehole ? QStringLiteral("시추주상도")
+      : kind == ReferenceMapKind::KigamPaleo ? QStringLiteral("KIGAM 고지형·수문") : QStringLiteral("수계도");
   auto* progress = createDownloadProgress(title);
   const auto context = QgsProject::instance()->transformContext();
   const quint64 generation = m_surveyGeneration;
@@ -623,6 +534,10 @@ void MainWindow::startReferenceDownload(ReferenceMapKind kind, const QgsRectangl
         return GeologyMapService::prepare(extent, targetPath, context, feedback);
       case ReferenceMapKind::River:
         return RiverMapService::prepare(extent, apiKey, targetPath, context, feedback);
+      case ReferenceMapKind::GeoInfoBorehole:
+        return GeoInfoBoreholeService::prepare(extent, targetPath, context, feedback);
+      case ReferenceMapKind::KigamPaleo:
+        return KigamPaleoService::prepare(extent, targetPath, context, feedback);
     }
     return PreparedReferenceMap{};
   };
@@ -652,6 +567,10 @@ void MainWindow::startReferenceDownload(ReferenceMapKind kind, const QgsRectangl
           layer = GeologyMapService::addPrepared(QgsProject::instance(), window->m_canvas, result, &error); break;
         case ReferenceMapKind::River:
           layer = RiverMapService::addPrepared(QgsProject::instance(), window->m_canvas, result, &error); break;
+        case ReferenceMapKind::GeoInfoBorehole:
+          layer = GeoInfoBoreholeService::addPrepared(QgsProject::instance(), window->m_canvas, result, &error); break;
+        case ReferenceMapKind::KigamPaleo:
+          layer = KigamPaleoService::addPrepared(QgsProject::instance(), window->m_canvas, result, &error); break;
       }
       if (!window || window->m_closingWindow || generation != window->m_surveyGeneration) return;
       if (!layer) {

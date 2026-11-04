@@ -28,6 +28,7 @@
 #include "KaStartPage.h"
 #include "KaMeasureMapTool.h"
 #include "KaEditErrors.h"
+#include "core/BasemapDsm.h"
 #include "core/DemAnalyzer.h"
 #include "core/TilePackService.h"
 #include "core/TrenchGridGenerator.h"
@@ -1706,9 +1707,15 @@ void MainWindow::importDemElevationRaster() {
 
 void MainWindow::runDemHillshade() {
 #if KA_HGIS_HAS_QGIS
-  const QString dem = QFileDialog::getOpenFileName(
-      this, QStringLiteral("DEM GeoTIFF"), QString(),
-      QStringLiteral("GeoTIFF (*.tif *.tiff *.TIF *.TIFF)"));
+  QString dem;
+  if (auto* loadedDem = BasemapDsm::findDem(QgsProject::instance())) {
+    if (QFileInfo::exists(loadedDem->source())) dem = loadedDem->source();
+  }
+  if (dem.isEmpty()) {
+    dem = QFileDialog::getOpenFileName(
+        this, QStringLiteral("DEM GeoTIFF"), QString(),
+        QStringLiteral("GeoTIFF (*.tif *.tiff *.TIF *.TIFF)"));
+  }
   if (dem.isEmpty())
     return;
   QDialog dlg(this);

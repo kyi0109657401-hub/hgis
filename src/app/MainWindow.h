@@ -133,7 +133,7 @@ public:
   void redoMapAction();
 
 private:
-  enum class ReferenceMapKind { Soil, PaleoSoil, Geology, River };
+  enum class ReferenceMapKind { Soil, PaleoSoil, Geology, River, GeoInfoBorehole, KigamPaleo };
   QProgressDialog* createDownloadProgress(const QString& title);
   void startFileDownload(const QString& title,
       std::function<PreparedReferenceMap(QgsFeedback*, const std::function<bool()>&)> prepare,
