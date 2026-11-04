@@ -26,8 +26,10 @@
 #include "core/RecentSurveys.h"
 #include "core/SurveyFacts.h"
 
+#include <QAction>
 #include <QFileInfo>
 #include <QHBoxLayout>
+#include <QMenu>
 #include <QSettings>
 #include <QShortcut>
 #include <QSplitter>
@@ -210,6 +212,15 @@ void MainWindow::setupStrataShell() {
   connect(QgsProject::instance(), &QgsProject::layersAdded, this, watch);
   watch(QgsProject::instance()->mapLayers().values());
   KaPaleoMenu::install(m_btnPaleo, this, [this] { startPaleoLandform(); });
+  if (m_btnDem && m_btnDem->menu()) {
+    m_btnDem->setPopupMode(QToolButton::MenuButtonPopup);
+    auto* actNgii = new QAction(QStringLiteral("국토지리정보원 계정 설정·자동 다운로드…"), m_btnDem->menu());
+    connect(actNgii, &QAction::triggered, this, [this] {
+      configureTopographicAccount();
+      openTopographicDownload();
+    });
+    m_btnDem->menu()->insertAction(m_btnDem->menu()->actions().value(0), actNgii);
+  }
   syncShellChips();
   syncBasemapCard();
 #endif

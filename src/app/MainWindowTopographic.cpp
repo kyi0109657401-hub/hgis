@@ -4,6 +4,7 @@
 #include "KaTopographicScopePanel.h"
 #include "KaTopographicAccountDialog.h"
 #include "KaUserError.h"
+#include "core/PaleoAnalysisRunner.h"
 #include "core/TopographicSettings.h"
 #include <QDir>
 #include <QFileDialog>
@@ -48,18 +49,24 @@ void MainWindow::openTopographicDownload() {
     connect(browser, &KaTopographicBrowser::sheetDownloaded, scope, &KaTopographicScopePanel::acceptDownload);
     connect(browser, &KaTopographicBrowser::fileDownloaded, this, [this](const QString& path) {
       const QString ext = QFileInfo(path).suffix().toLower();
-      if (ext == QLatin1String("zip") || ext == QLatin1String("shp") || ext == QLatin1String("dxf") ||
+      if (ext == QLatin1String("img") || ext == QLatin1String("tif") || ext == QLatin1String("tiff")) {
+        PaleoAnalysisRunner::registerDemWideLayers(QgsProject::instance(), m_canvas, path, m_surveyPath, nullptr);
+      } else if (ext == QLatin1String("zip") || ext == QLatin1String("shp") || ext == QLatin1String("dxf") ||
           ext == QLatin1String("ngi") || ext == QLatin1String("gpkg")) {
         QDir received(QFileInfo(path).absolutePath());
         received.cdUp(); // Include earlier completed downloads and their sidecars.
         showTopographicFiles(received.absolutePath());
       } else {
-        statusBar()->showMessage(QStringLiteral("파일을 받았습니다. 수치지형도 ZIP·SHP·DXF·NGI·GPKG 자료를 선택해 주세요."), 10000);
+        statusBar()->showMessage(QStringLiteral("파일을 받았습니다. 수치지형도·DEM 자료를 선택해 주세요."), 10000);
       }
     });
     connect(browser, &KaTopographicBrowser::importFolderRequested, this, &MainWindow::importTopographicFolder);
   }
-  const auto account=TopographicSettings::credentials();
+  auto account=TopographicSettings::credentials();
+  if ((account.username.isEmpty() || account.password.isEmpty()) && !QStandardPaths::isTestModeEnabled()) {
+    configureTopographicAccount();
+    account = TopographicSettings::credentials();
+  }
   m_topographicBrowser->setCredentials(account.username,account.password);
   if (auto* scope = m_topographicBrowser->findChild<KaTopographicScopePanel*>()) {
     scope->setLibraryDirectory(directory); scope->activate();

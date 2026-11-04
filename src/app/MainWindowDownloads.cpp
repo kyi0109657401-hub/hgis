@@ -10,6 +10,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QProgressDialog>
+#include <QStandardPaths>
 #include <QStatusBar>
 #include <QToolButton>
 #include <qgsapplication.h>
@@ -118,6 +119,9 @@ void MainWindow::pruneRetiredReferenceFolders() {
 
 void MainWindow::startDemDownload() {
   if (!m_canvas) return;
+  if (!QStandardPaths::isTestModeEnabled()) {
+    openTopographicDownload();
+  }
   const QString dir = referenceDownloadFolder(QStringLiteral("DEM"));
   if (dir.isEmpty()) return;
   QgsRectangle extent = PaleoAnalysisRunner::surveyExtentRadius(QgsProject::instance(), m_canvas, 5000.0);
