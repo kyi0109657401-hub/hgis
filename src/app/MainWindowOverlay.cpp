@@ -304,6 +304,9 @@ void MainWindow::toggleDemMap() {
   if (!m_canvas)
     return;
   QgsProject* proj = QgsProject::instance();
+  for (QgsMapLayer* old : proj->mapLayersByName(BasemapDsm::copernicusTitle())) {
+    if (old) proj->removeMapLayer(old->id());
+  }
   // Tagged dem, or an untagged 「DEM」 from an older project; the title may have changed.
   QgsRasterLayer* dem = BasemapDsm::findDem(proj);
 

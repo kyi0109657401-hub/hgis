@@ -501,8 +501,7 @@ private:
   // 복원되지 않은 작업공간은 덮어쓰지 않는다. 수동 저장도 새 사본으로 안내한다.
   bool m_workspaceRestoreSuppressesAutosave = false;
   bool m_basemapBootPending = false;
-  // 조사 열기가 끝나기를 기다리며 다시 시도한 횟수. 0.3초 × 40 = 12초까지.
-  int m_basemapBootRetries = 0;
+  int m_basemapBootRetries = 0;  // 조사 열기 대기 재시도 횟수 (0.3초 × 40 = 12초)
   static constexpr int kBasemapBootRetryMax = 40;
   bool m_isLoadingBasemaps = false;
   bool m_isOpeningSurvey = false;
@@ -512,6 +511,7 @@ private:
   bool m_canZoomNext = false;
   QPointer<KaReferenceDownloadJob> m_referenceDownload;
   QPointer<KaTopographicBrowser> m_topographicBrowser;
+  QPointer<KaTopographicBrowser> m_demBrowser;
   QPointer<KaTopographicImportDialog> m_topographicImport;
   quint64 m_surveyGeneration = 0;
   bool m_surveySessionReady = false;

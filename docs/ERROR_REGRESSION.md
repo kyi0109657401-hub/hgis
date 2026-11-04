@@ -84,6 +84,7 @@
 | 조사를 열면 「자석 끔」으로 시작해 그릴 때 선·점에 붙지 않는다 | 자석을 고른 적 없는 조사는 QGIS 기본값(꺼짐)으로 읽혔다. | `LayerOps::readSnapSettings`: `ka_hgis/snap_chosen` 이 없으면 켜짐, `applySnapSettings` 가 그 표시를 남겨 끈 선택은 기억한다. 테스트: `magnetIsOnUntilTheUserTurnsItOff` |
 | 단면도·도면 탭에서 오른쪽 판이 안 보임(F11 전체 화면에서만 보임; 단면도 탭은 2026-10-10 삭제) | 새 모양 홈 「이어서 작업」 상자의 글자 칸이 글 길이만큼 최소 너비를 고집해 홈이 2097 px → 탭 창 전체가 2415 px를 요구, 1920 화면에서 오른쪽이 밀려남. 기록: `Unable to set geometry 2415x1009`. | 상자 안 이름·여섯 칸·메모 줄은 가로 크기 무시(Ignored)로 상자 폭을 나눠 씀. 테스트: `everyTabFitsA1920ScreenInPaper` |
 | 조판에서 「레이어를 가운데」를 누르면 조사구역은 가운데로 오는데 주변유적(참조 지도)은 옛 자리에 남고, 「자동 축척」을 눌러야 맞음(2026-10-20) | 주변유적은 본지도 위 덧지도(`ka_map_above`)에 그린다. 덧지도 맞추기가 축척이 바뀔 때만 돌아, 축척을 두고 옮기는 「레이어를 가운데」·「지도 조정」 끌기에서는 따라오지 않았다. | `KaDrawingStudio::syncScaleDecorations` 가 지도 범위가 바뀔 때마다 `syncAboveLabelsMap` 을 부르고, 자리가 바뀌었으면 번호 갱신도 돌린다. 테스트: `drawingStudio_centerLayerMovesAboveLabelsMapToo` |
+| DEM 단추를 누르면 수치지형도 다운로드 창이 열려 수치지형도(DXF)를 받거나 해외 공개 DEM(Copernicus DSM)을 받음(2026-11-05) | `MainWindow::startDemDownload()` 가 수치지형도 전용 창(`openTopographicDownload`)과 해외 공개 DEM(`DemDownloadService::prepare`)을 불렀고, `ngii-topographic.js` 가 `suchiQuery.do`(`mapType='1'`)로만 고정되어 있었다. | 해외 공개 DEM 다운로드를 빼고 별도의 국토지리정보원 DEM 다운로드 창(`m_demBrowser`, `kaDemMode=true`)을 열어 로그인·반경 검색·신청서·INNORIX 전송 뒤 마지막에 `demQuery.do` → `cb_dem` → `downloadMapData('4','online',...)` → `shbtInsertTritVidoDem.do` 로 국토지리원 DEM을 받아 적재한다. 시험: `download_ui` (`ngiiDemAutomationUsesDemEndpointsAndMapType4`), `paleo_sources`. |
 
 ## 지적 GetMap (확인된 사실)
 

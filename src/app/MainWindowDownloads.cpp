@@ -2,13 +2,16 @@
 #include "core/KaLogExcept.h"
 #include "MainWindow.h"
 #include "KaReferenceDownloadJob.h"
+#include "KaTopographicBrowser.h"
 #include "core/BasemapDsm.h"
-#include "core/DemDownloadService.h"
 #include "core/LayerOps.h"
 #include "core/PaleoAnalysisRunner.h"
 #include "core/ReferenceStorage.h"
+#include "core/TopographicSettings.h"
+#include "core/TopographicSheets.h"
 #include <QDir>
 #include <QFileInfo>
+#include <QLabel>
 #include <QProgressDialog>
 #include <QStandardPaths>
 #include <QStatusBar>
@@ -119,65 +122,76 @@ void MainWindow::pruneRetiredReferenceFolders() {
 
 void MainWindow::startDemDownload() {
   if (!m_canvas) return;
-  if (!QStandardPaths::isTestModeEnabled()) {
-    openTopographicDownload();
+  auto* project = QgsProject::instance();
+  for (QgsMapLayer* old : project->mapLayersByName(BasemapDsm::copernicusTitle())) {
+    if (old) project->removeMapLayer(old->id());
   }
-  const QString builtNgii = PaleoAnalysisRunner::buildNgiiDemFromTopographic(
-      QgsProject::instance(), m_canvas, m_surveyPath, nullptr);
-  if (!builtNgii.isEmpty()) {
-    QgsProject::instance()->setDirty(true);
-    statusBar()->showMessage(
-        QStringLiteral("국토지리정보원 수치지형도 등고선으로 정밀 DEM·광역지형도·경사도를 생성했습니다."),
-        8000);
+  if (m_surveyPath.isEmpty() || !QFileInfo::exists(m_surveyPath)) {
+    notify(Notice::Info, QStringLiteral("국토지리정보원 DEM"),
+           QStringLiteral("먼저 새 조사를 만들거나 기존 조사를 여세요. 조사 폴더 안의 DEM 폴더에 저장합니다."));
     return;
   }
-  const QString dir = referenceDownloadFolder(QStringLiteral("DEM"));
-  if (dir.isEmpty()) return;
-  QgsRectangle extent = PaleoAnalysisRunner::surveyExtentRadius(QgsProject::instance(), m_canvas, 5000.0);
+  const QString demDir = QFileInfo(m_surveyPath).absoluteDir().filePath(QStringLiteral("DEM"));
+  const QString rawDir = QDir(demDir).filePath(QStringLiteral("원본"));
+  if (!QDir().mkpath(rawDir)) {
+    notify(Notice::Warning, QStringLiteral("국토지리정보원 DEM"),
+           QStringLiteral("조사 폴더 안에 DEM 폴더를 만들지 못했습니다."));
+    return;
+  }
+  if (!m_demBrowser) {
+    m_demBrowser = new KaTopographicBrowser(this, rawDir);
+    m_demBrowser->setProperty("kaDemMode", true);
+    m_demBrowser->setObjectName(QStringLiteral("demBrowser"));
+    m_demBrowser->setWindowTitle(QStringLiteral("국토지리정보원 DEM 내려받기"));
+    if (auto* title = m_demBrowser->findChild<QLabel*>(QStringLiteral("downloadTitle")))
+      title->setText(QStringLiteral("국토지리정보원 DEM 다운로드"));
+    if (auto* sub = m_demBrowser->findChild<QLabel*>(QStringLiteral("downloadSubtitle")))
+      sub->setText(QStringLiteral("국토정보플랫폼 · 조사 주변 도엽의 공개DEM 자료를 받습니다."));
+    auto importDem = [this](const QString& path) {
+      QString err;
+      if (PaleoAnalysisRunner::importNgiiDemDownload(QgsProject::instance(), m_canvas, path, m_surveyPath, &err)) {
+        if (m_demBrowser) m_demBrowser->setActivityStatus(QStringLiteral("국토지리정보원 DEM·광역지형도·경사도를 지도에 올렸습니다."));
+        QgsProject::instance()->setDirty(true);
+        syncThematicButtons();
+        statusBar()->showMessage(QStringLiteral("국토지리정보원 DEM·광역지형도·경사도를 적재했습니다."), 8000);
+      } else {
+        const QString msg = err.isEmpty() ? QStringLiteral("받은 DEM 파일을 열지 못했습니다.") : err;
+        if (m_demBrowser) m_demBrowser->setActivityAttention(msg);
+        notify(Notice::Warning, QStringLiteral("국토지리정보원 DEM 적재 실패"), msg);
+      }
+    };
+    connect(m_demBrowser, &KaTopographicBrowser::sheetDownloaded, this,
+            [importDem](const QString& path, const QJsonObject&) { importDem(path); });
+    connect(m_demBrowser, &KaTopographicBrowser::fileDownloaded, this, importDem);
+    connect(m_demBrowser, &KaTopographicBrowser::importFolderRequested, this, &MainWindow::importDemElevationRaster);
+    connect(m_demBrowser, &KaTopographicBrowser::automationNeedsInput, this,
+            [this](const QString& message) { statusBar()->showMessage(message, 8000); });
+  } else {
+    m_demBrowser->setDownloadRoot(rawDir);
+  }
+  const auto account = TopographicSettings::credentials();
+  m_demBrowser->setCredentials(account.username, account.password);
+  QgsPointXY centerWork;
+  PaleoAnalysisRunner::surveyExtentRadius(project, m_canvas, 5000.0, nullptr, &centerWork);
   const QgsCoordinateReferenceSystem workCrs =
-      QgsProject::instance()->crs().isValid() ? QgsProject::instance()->crs()
-                                              : m_canvas->mapSettings().destinationCrs();
-  const QgsCoordinateReferenceSystem wgs(QStringLiteral("EPSG:4326"));
+      project->crs().isValid() ? project->crs() : m_canvas->mapSettings().destinationCrs();
   try {
-    const QgsCoordinateTransform transform(workCrs, wgs, QgsProject::instance());
-    extent = transform.transformBoundingBox(extent);
-  } catch (const QgsException&) {
-    notify(Notice::Warning, QStringLiteral("DEM"), QStringLiteral("화면의 좌표 범위를 계산하지 못했습니다. 조사 좌표계를 확인하고 다시 실행하세요."));
-    return;
+    const auto selected = TopographicSheets::select(centerWork, workCrs, 5.0, project->transformContext());
+    QStringList wanted;
+    for (const auto& s : selected.sheets) wanted.append(s.number);
+    if (wanted.isEmpty()) wanted.append(QStringLiteral("359011"));
+    QgsCoordinateTransform toPortal(workCrs, QgsCoordinateReferenceSystem(QStringLiteral("EPSG:5179")), project);
+    toPortal.setAllowFallbackTransforms(false);
+    toPortal.setBallparkTransformsAreAppropriate(false);
+    const QgsPointXY portal = toPortal.transform(centerWork);
+    m_demBrowser->prepareSheets(portal.x(), portal.y(), 5000.0, wanted);
+  } catch (const QgsCsException&) {
+    KA_LOG_EXCEPT();
+    m_demBrowser->setActivityAttention(QStringLiteral("현재 위치를 국토지리정보원 검색 좌표로 변환하지 못했습니다."));
   }
-  const QString target = QDir(dir).filePath(QStringLiteral("DEM.tif"));
-  const QPointer<MainWindow> window(this);
-  startFileDownload(QStringLiteral("DEM"), [extent, target](QgsFeedback* feedback, const std::function<bool()>& cancelled) {
-    return DemDownloadService::prepare(extent, target, feedback, cancelled);
-  }, [window](const PreparedReferenceMap& result) {
-    if (!window) return;
-    QString error;
-    if (!LayerOps::addDemElevationRaster(QgsProject::instance(), window->m_canvas, result.rasterUri, &error)) {
-      window->notify(Notice::Warning, QStringLiteral("DEM 표시 실패"), error);
-      return;
-    }
-    result.retainFiles();
-    if (PaleoAnalysisRunner::buildNgiiDemFromTopographic(
-            QgsProject::instance(), window->m_canvas, window->m_surveyPath, nullptr)
-            .isEmpty()) {
-      PaleoAnalysisRunner::registerDemWideLayers(QgsProject::instance(), window->m_canvas,
-                                                 result.rasterUri, window->m_surveyPath, nullptr);
-    }
-    for (QgsMapLayer* layer : QgsProject::instance()->mapLayers()) {
-      // By identity (ka_hgis/reference_kind = dem), not by the title "DEM".
-      if (!BasemapDsm::isDemLayer(layer) || layer->source() != result.rasterUri) continue;
-      // This button downloads Copernicus GLO-30, a surface model: the legend says so (F062).
-      BasemapDsm::labelCopernicus(layer);
-      const QgsRectangle coverage = layer->extent(); // downloaded raster stays in WGS84
-      layer->setCustomProperty(QStringLiteral("ka_hgis/dem_cover_wgs84"), QStringLiteral("%1,%2,%3,%4")
-          .arg(coverage.xMinimum(), 0, 'f', 9).arg(coverage.yMinimum(), 0, 'f', 9)
-          .arg(coverage.xMaximum(), 0, 'f', 9).arg(coverage.yMaximum(), 0, 'f', 9));
-      if (window->m_layerTree) window->m_layerTree->setCurrentLayer(layer);
-      const QString reliefError = layer->customProperty(QStringLiteral("ka_hgis/dem_relief_error")).toString();
-      if (!reliefError.isEmpty()) window->notify(Notice::Warning, QStringLiteral("DEM 음영 표시 실패"), reliefError);
-    }
-    QgsProject::instance()->setDirty(true);
-    window->statusBar()->showMessage(QStringLiteral("DEM을 추가했습니다. DEM 버튼의 「DEM 표현」에서 색과 음영을 조절하세요."), 8000);
-    if (!result.warnings.isEmpty()) window->notify(Notice::Warning, QStringLiteral("DEM 자료 확인"), result.warnings.join(QLatin1Char('\n')));
-  });
+  m_demBrowser->setCompactMode(true);
+  m_demBrowser->show();
+  m_demBrowser->raise();
+  m_demBrowser->activateWindow();
+  hideSubTools();
 }

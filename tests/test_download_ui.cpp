@@ -196,6 +196,25 @@ private slots:
     dialog.reject();
     QCOMPARE(canceled.count(), 1);
   }
+
+  void ngiiDemAutomationUsesDemEndpointsAndMapType4() {
+    QFile scriptFile(QStringLiteral(":/providers/ngii-topographic.js"));
+    if (!scriptFile.exists()) scriptFile.setFileName(QStringLiteral("data/providers/ngii-topographic.js"));
+    QVERIFY(scriptFile.open(QIODevice::ReadOnly));
+    const QString script = QString::fromUtf8(scriptFile.readAll());
+    QVERIFY2(script.contains(QLatin1String("input.product==='dem'")) ||
+                 script.contains(QLatin1String("input.product === 'dem'")),
+             "ngii-topographic.js must branch on product==='dem' for NGII DEM downloads");
+    QVERIFY2(script.contains(QLatin1String("/ms/map/demQuery.do")),
+             "DEM mode must query /ms/map/demQuery.do instead of /ms/map/suchiQuery.do");
+    QVERIFY2(script.contains(QLatin1String("section.mapList.dem")) &&
+                 script.contains(QLatin1String("cb_dem")),
+             "DEM mode must select checkboxes in section.mapList.dem (input[name=cb_dem])");
+    QVERIFY2(script.contains(QLatin1String("onBasis")),
+             "DEM mode must populate onBasis (상세용도) required for mapType 4");
+    QVERIFY2(script.contains(QLatin1String("/pd/shbtManage/shbtInsertTritVidoDem.do")),
+             "DEM mode must observe /pd/shbtManage/shbtInsertTritVidoDem.do order completion");
+  }
 };
 
 int main(int argc, char** argv) {

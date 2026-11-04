@@ -1,3 +1,4 @@
+#include "core/BasemapDsm.h"
 #include "core/GeoInfoBoreholeService.h"
 #include "core/HgisPaleoEngine.h"
 #include "core/KigamPaleoService.h"
@@ -238,6 +239,16 @@ private slots:
     QgsRasterLayer* ngiiDem = PaleoAnalysisRunner::findPreferredDem(proj);
     QVERIFY(ngiiDem != nullptr);
     QCOMPARE(ngiiDem->name(), QStringLiteral("[DEM] 국토지리원_DEM.tif"));
+    QCOMPARE(BasemapDsm::findDem(proj), ngiiDem);
+    const QString txtDem = dir.filePath(QStringLiteral("35901.txt"));
+    {
+      QFile tf(txtDem);
+      QVERIFY(tf.open(QIODevice::WriteOnly | QIODevice::Text));
+      tf.write("219000 360000 32.0\n219600 360000 36.0\n219000 360500 42.0\n219600 360500 48.0\n");
+    }
+    QVERIFY2(PaleoAnalysisRunner::importNgiiDemDownload(proj, nullptr, txtDem, surveyGpkg, &err),
+             qPrintable(err));
+    QVERIFY(BasemapDsm::findDem(proj) != nullptr);
 
     // 토양도·지질도·수계도·시추공 레이어를 올리고 runFullPipeline이 실제 공간 속성을 읽는지 검증한다.
     auto* soil = new QgsVectorLayer(QStringLiteral("MultiPolygon?crs=EPSG:5187"),

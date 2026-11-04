@@ -80,7 +80,9 @@ inline QStringList legacyTitles(const QString& kind) {
 inline QString forTitle(const QString& title) {
   const QString base = kaStripLegendCrsSuffix(title.trimmed());
   if (base == QStringLiteral("지질도")) return QString::fromLatin1(kGeology);
-  if (base == QStringLiteral("지표모델(DSM) 30m · Copernicus")) return QString::fromLatin1(kDem);
+  if (base == QStringLiteral("지표모델(DSM) 30m · Copernicus") ||
+      base == QStringLiteral("[DEM] 국토지리원_DEM.tif"))
+    return QString::fromLatin1(kDem);
   for (const char* kind : {kVworldBase, kSatellite, kHybrid, kVworldContour, kOsm, kCarto,
                            kGoogleRoad, kTerrain, kDem, kDemRelief, kGeology, kSoil, kRiver,
                            kHistory1919, kDaedongyeojido}) {

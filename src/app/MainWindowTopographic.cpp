@@ -100,6 +100,10 @@ void MainWindow::configureTopographicAccount() {
     m_topographicBrowser->setCredentials(account.username,account.password);
     if (resume) scope->activate();
   }
+  if (m_demBrowser) {
+    const auto account=TopographicSettings::credentials();
+    m_demBrowser->setCredentials(account.username,account.password);
+  }
   statusBar()->showMessage(QStringLiteral("수치지형도 로그인 설정을 저장했습니다."),5000);
 }
 

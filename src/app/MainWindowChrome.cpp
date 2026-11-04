@@ -217,7 +217,7 @@ void MainWindow::setupStrataShell() {
     auto* actNgii = new QAction(QStringLiteral("국토지리정보원 계정 설정·자동 다운로드…"), m_btnDem->menu());
     connect(actNgii, &QAction::triggered, this, [this] {
       configureTopographicAccount();
-      openTopographicDownload();
+      startDemDownload();
     });
     m_btnDem->menu()->insertAction(m_btnDem->menu()->actions().value(0), actNgii);
   }

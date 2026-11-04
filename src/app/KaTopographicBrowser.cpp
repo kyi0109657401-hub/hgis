@@ -672,10 +672,10 @@ void KaTopographicBrowser::prepareSheets(double x, double y, double radius, cons
                                         const QStringList& cachedNumbers) {
   QStringList unique=numbers; unique.removeDuplicates(); unique.sort();
   QStringList cached=cachedNumbers;cached.removeDuplicates();cached.sort();
-  static const QRegularExpression sheet(QStringLiteral("^[0-9]{6}$"));
+  const QRegularExpression sheet(property("kaDemMode").toBool()?QStringLiteral("^[0-9]{5,6}$"):QStringLiteral("^[0-9]{6}$"));
   if(!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(radius) || radius<=0 ||
-     unique.size()>100 || std::any_of(unique.cbegin(),unique.cend(),[](const QString& n){return !sheet.match(n).hasMatch();}) ||
-     std::any_of(cached.cbegin(),cached.cend(),[](const QString& n){return !sheet.match(n).hasMatch();})) {
+     unique.size()>100 || std::any_of(unique.cbegin(),unique.cend(),[&](const QString& n){return !sheet.match(n).hasMatch();}) ||
+     std::any_of(cached.cbegin(),cached.cend(),[&](const QString& n){return !sheet.match(n).hasMatch();})) {
     automationMessage(QStringLiteral("자동 선택할 1:25,000 도엽 목록과 반경을 확인하지 못했습니다.")); return;
   }
   const QJsonObject scope{{QStringLiteral("x"),x},{QStringLiteral("y"),y},{QStringLiteral("radius"),radius},
@@ -766,7 +766,7 @@ void KaTopographicBrowser::pollAutomation() {
   else if(command==QLatin1String("form") || command==QLatin1String("submit"))setPhase(QStringLiteral("신청"));
   else if(command==QLatin1String("order") || command==QLatin1String("files"))setPhase(QStringLiteral("파일 준비"));
   else if(command==QLatin1String("download"))setPhase(QStringLiteral("다운로드"));
-  input.insert(QStringLiteral("command"),command);
+  input.insert(QStringLiteral("command"),command);if(property("kaDemMode").toBool())input.insert(QStringLiteral("product"),QStringLiteral("dem"));
   input.insert(QStringLiteral("diagnostics"),qEnvironmentVariableIntValue("KA_HGIS_NGII_DIAGNOSTICS")==1);
   input.insert(QStringLiteral("generation"),QString::number(m_automationGeneration));
   input.insert(QStringLiteral("number"),m_currentRecord.value(QStringLiteral("num")));
@@ -936,7 +936,7 @@ void KaTopographicBrowser::requestDownload(QWebEngineDownloadRequest* request) {
       for(const auto& item:m_officialRecords)if(item.toObject().value(QStringLiteral("num")).toString()==number){officialRecord=item.toObject();break;}
       if(officialRecord.isEmpty()){request->cancel();failAutomation(QStringLiteral("받은 파일의 도엽 정보를 확인하지 못했습니다."));return;}
     }
-    officialRecord.insert(QStringLiteral("source"),QStringLiteral("NGII suchiQuery.do"));
+    officialRecord.insert(QStringLiteral("source"),property("kaDemMode").toBool()?QStringLiteral("NGII demQuery.do"):QStringLiteral("NGII suchiQuery.do"));
     officialRecord.insert(QStringLiteral("requestScope"),m_scope);
     if(request->totalBytes()>1000000000) {
       request->cancel();failAutomation(QStringLiteral("파일 크기가 1GB를 넘어서 자동 내려받기를 중단했습니다. 공식 목록에서 나누어 내려받아 주세요."));return;
@@ -1043,7 +1043,7 @@ void KaTopographicBrowser::requestDownload(QWebEngineDownloadRequest* request) {
             for(const auto& completedPath:completed) {
               if(QFileInfo(completedPath).absolutePath()!=directory)continue;
               const auto suffix=QFileInfo(completedPath).suffix().toLower();
-              if(suffix!=QLatin1String("dxf") && suffix!=QLatin1String("zip"))continue;
+              if(suffix==QLatin1String("xml")||(!property("kaDemMode").toBool()&&suffix!=QLatin1String("dxf")&&suffix!=QLatin1String("zip")))continue;
               emit sheetDownloaded(completedPath,officialRecord);
               if(!alive || generation!=m_automationGeneration || m_automationStage!=QLatin1String("transfer"))return;
             }
@@ -1067,7 +1067,7 @@ void KaTopographicBrowser::requestDownload(QWebEngineDownloadRequest* request) {
           const QPointer<KaTopographicBrowser> alive(this);
           for(const auto& completedPath:completed) {
             const QString suffix=QFileInfo(completedPath).suffix().toLower();
-            if(suffix!=QLatin1String("dxf") && suffix!=QLatin1String("zip"))continue;
+            if(suffix==QLatin1String("xml")||(!property("kaDemMode").toBool()&&suffix!=QLatin1String("dxf")&&suffix!=QLatin1String("zip")))continue;
             emit sheetDownloaded(completedPath,officialRecord);
             if(!alive || generation!=m_automationGeneration || m_automationStage!=QLatin1String("transfer"))return;
           }

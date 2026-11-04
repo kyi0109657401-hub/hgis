@@ -13,6 +13,7 @@
   const button = (root, text) => Array.from(root.querySelectorAll('button,input[type=button],input[type=submit],a'))
     .filter(e => visible(e) && (e.textContent || e.value || '').trim() === text);
   const key = String(input.generation);
+  const isDem = input.product === 'dem';
   if(input.command==='configureTransfer') {
     const local=input.testMode===true && location.protocol==='http:' && ['127.0.0.1','localhost'].includes(location.hostname);
     if(location.pathname!=='/nlippd/pd/innorix/innorixdownLoad.do' ||
@@ -48,11 +49,50 @@
               Math.abs(area.minx-(input.x-input.radius))>1 || Math.abs(area.maxx-(input.x+input.radius))>1 ||
               Math.abs(area.miny-(input.y-input.radius))>1 || Math.abs(area.maxy-(input.y+input.radius))>1)throw new Error('scope');
           state.area=area;
+          if(isDem) {
+            return post('/ms/map/demYearsQuery.do',{}).catch(()=>({items:[{year:'2025'}]})).then(yearsData=>{
+              if(window.__kaTopographicSelection!==state)throw new Error('superseded');
+              const years=Array.isArray(yearsData && yearsData.items)
+                ? yearsData.items.map(r=>String(r && r.year || '')).filter(y=>/^\d{4}$/.test(y)) : [];
+              const maxYear=years.length?String(Math.max(...years.map(Number))):'2025';
+              state.maxYear=maxYear;
+              return post('/ms/map/demQuery.do',{wkt:area.wkt,minx:area.minx,miny:area.miny,
+                maxx:area.maxx,maxy:area.maxy,toYear:'0',fromYear:maxYear});
+            });
+          }
           return post('/ms/map/suchiQuery.do',{index:'',type:'0',scale:'25000',wkt:area.wkt,
             minx:area.minx,miny:area.miny,maxx:area.maxx,maxy:area.maxy});
         })
         .then(data => {
           if (window.__kaTopographicSelection !== state) return;
+          if (isDem) {
+            const rawItems = data && data.items;
+            if (!Array.isArray(rawItems) || rawItems.length>500) throw new Error('sheets');
+            const byNum = new Map();
+            for (const row of rawItems) {
+              const num=String(row && row.num || ''), year=String(row && row.year || state.maxYear || '');
+              const name=String(row && (row.nam || row.name) || '');
+              if (!/^\d{5,6}$/.test(num) || !/^\d{4}$/.test(year) || !name ||
+                  ![row.minx,row.miny,row.maxx,row.maxy].every(Number.isFinite) ||
+                  row.minx>=row.maxx || row.miny>=row.maxy || row.maxx<state.area.minx || row.minx>state.area.maxx ||
+                  row.maxy<state.area.miny || row.miny>state.area.maxy) throw new Error('product');
+              const prev=byNum.get(num);
+              if(!prev || Number(year)>Number(prev.year))
+                byNum.set(num,{num,name,year,sigu:row.sigu?String(row.sigu):'',
+                  minx:row.minx,miny:row.miny,maxx:row.maxx,maxy:row.maxy});
+            }
+            const items=Array.from(byNum.values()).slice(0,18);
+            const wanted5=Array.from(new Set((input.numbers||[]).map(n=>String(n).slice(0,5))));
+            state.unavailable=wanted5.filter(n=>!byNum.has(n));
+            state.items=items;
+            const cached=new Set((input.cachedNumbers||[]).map(n=>String(n).slice(0,5)));
+            state.cached=items.filter(r=>cached.has(String(r.num))).map(r=>String(r.num));
+            state.downloadItems=items.filter(r=>!cached.has(String(r.num)));
+            if(!items.length){state.state='unavailable';return;}
+            if(!state.downloadItems.length){state.state='cached';return;}
+            state.state='waitingLayout';state.layoutStarted=Date.now();
+            return;
+          }
           const items = data && data.items;
           const actual = new Set();
           if (!Array.isArray(items) || items.length>100) throw new Error('sheets');
@@ -83,63 +123,115 @@
     if(state.state==='waitingLayout') {
       // The public spatial response may finish before NGII initializes its map
       // and product tabs. Reuse that response while waiting; never submit here.
-      const map=window.map,query=window.mapQuery,api=window.MEASURE_API;
-      const choice=document.querySelector('#totalSearch section.mapList.measure ._accordion>li>dl>dt button[value="0"]');
-      const panel=document.querySelector('#totalSearch section.mapList.measure');
-      const view=map && typeof map.getView==='function' && map.getView();
-      const projection=view && typeof view.getProjection==='function' && view.getProjection();
-      const scale=choice && choice.parentElement.querySelector('select');
-      const ready=projection && typeof projection.getCode==='function' && typeof view.setCenter==='function' &&
-        query && typeof query.clear==='function' && api && typeof api.completed==='function' &&
-        typeof window.jQuery==='function' && window.integ && choice && panel;
-      const scaleReady=scale && Array.from(scale.options).some(o=>o.value==='25000');
-      state.errorCode=ready && !scaleReady?'scale':'layout';
-      if(!ready || !scaleReady) {
-        if(Date.now()-state.layoutStarted>60000){state.state='blocked';state.message='공식 지도의 초기화가 지연되고 있습니다. 공식 화면을 새로고침한 뒤 다시 시도해 주세요.';}
-      } else if(projection.getCode()!=='EPSG:5179') {
-        state.state='blocked';state.message='공식 지도의 좌표체계를 확인하지 못해 도엽 선택을 중단했습니다.';
+      if (isDem) {
+        const map=window.map,query=window.mapQuery,api=window.DEM_API;
+        const panel=document.querySelector('#totalSearch section.mapList.dem');
+        const view=map && typeof map.getView==='function' && map.getView();
+        const projection=view && typeof view.getProjection==='function' && view.getProjection();
+        const ready=projection && typeof projection.getCode==='function' && typeof view.setCenter==='function' &&
+          query && typeof query.clear==='function' && api && typeof api.search==='function' &&
+          typeof window.jQuery==='function' && window.integ && panel;
+        state.errorCode='layout';
+        if(!ready) {
+          if(Date.now()-state.layoutStarted>60000){state.state='blocked';state.message='공식 지도의 초기화가 지연되고 있습니다. 공식 화면을 새로고침한 뒤 다시 시도해 주세요.';}
+        } else if(projection.getCode()!=='EPSG:5179') {
+          state.state='blocked';state.message='공식 지도의 좌표체계를 확인하지 못해 도엽 선택을 중단했습니다.';
+        } else {
+          try {
+            query.clear();query.index=[];
+            for(const field of ['wkt','minx','miny','maxx','maxy'])query[field]=state.area[field];
+            window.integ.searchForm=3;
+            view.setCenter([input.x,input.y]);
+            const size=typeof map.getSize==='function' && map.getSize();
+            if(Array.isArray(size) && size.length===2 && size.every(n=>Number.isFinite(n) && n>0) && typeof view.fit==='function')
+              view.fit([input.x-input.radius,input.y-input.radius,input.x+input.radius,input.y+input.radius],size);
+            panel.style.display='';
+            const shell=document.querySelector('main.map.total');
+            if(shell)shell.classList.add('_resultOn','_categoryOn','_mapListOn');
+            const toSel=document.getElementById('toDemYear'),fromSel=document.getElementById('fromDemYear');
+            if(toSel)toSel.value='0';
+            if(fromSel && state.maxYear) {
+              if(!Array.from(fromSel.options).some(o=>o.value===state.maxYear)){
+                const opt=document.createElement('option');opt.value=state.maxYear;opt.textContent=state.maxYear+'년';
+                fromSel.appendChild(opt);
+              }
+              fromSel.value=state.maxYear;
+            }
+            state.state='waitingRows';state.started=Date.now();
+            api.search();
+          } catch(error) {
+            state.state='blocked';state.message='공식 DEM 도엽 목록을 준비하지 못했습니다. 공식 화면에서 새로고침한 뒤 다시 시도해 주세요.';
+          }
+        }
       } else {
-        try {
-          query.clear();query.index=[];query.scale='25000';
-          for(const field of ['wkt','minx','miny','maxx','maxy'])query[field]=state.area[field];
-          window.integ.searchForm=3;
-          if(window.simple && window.simple.settings)window.simple.settings.scale='25000';
-          view.setCenter([input.x,input.y]);
-          // NGII uses the older fit(extent, map.getSize()) contract. A hidden
-          // WebEngine viewport can have no size; geographic search is independent
-          // of this purely visual fit, so do not synthesize a screen resolution.
-          const size=typeof map.getSize==='function' && map.getSize();
-          if(Array.isArray(size) && size.length===2 && size.every(n=>Number.isFinite(n) && n>0) && typeof view.fit==='function')
-            view.fit([input.x-input.radius,input.y-input.radius,input.x+input.radius,input.y+input.radius],size);
-          state.errorCode='scale';scale.value='25000';
-          panel.style.display='';
-          const shell=document.querySelector('main.map.total');
-          if(shell)shell.classList.add('_resultOn','_categoryOn','_mapListOn');
-          api.downArray=[];state.errorCode='layout';
-          state.state='waitingRows';state.started=Date.now();
-          api.completed('0',window.jQuery(choice));
-        } catch(error) {
-          state.state='blocked';state.message='공식 도엽 목록을 준비하지 못했습니다. 공식 화면에서 새로고침한 뒤 다시 시도해 주세요.';
+        const map=window.map,query=window.mapQuery,api=window.MEASURE_API;
+        const choice=document.querySelector('#totalSearch section.mapList.measure ._accordion>li>dl>dt button[value="0"]');
+        const panel=document.querySelector('#totalSearch section.mapList.measure');
+        const view=map && typeof map.getView==='function' && map.getView();
+        const projection=view && typeof view.getProjection==='function' && view.getProjection();
+        const scale=choice && choice.parentElement.querySelector('select');
+        const ready=projection && typeof projection.getCode==='function' && typeof view.setCenter==='function' &&
+          query && typeof query.clear==='function' && api && typeof api.completed==='function' &&
+          typeof window.jQuery==='function' && window.integ && choice && panel;
+        const scaleReady=scale && Array.from(scale.options).some(o=>o.value==='25000');
+        state.errorCode=ready && !scaleReady?'scale':'layout';
+        if(!ready || !scaleReady) {
+          if(Date.now()-state.layoutStarted>60000){state.state='blocked';state.message='공식 지도의 초기화가 지연되고 있습니다. 공식 화면을 새로고침한 뒤 다시 시도해 주세요.';}
+        } else if(projection.getCode()!=='EPSG:5179') {
+          state.state='blocked';state.message='공식 지도의 좌표체계를 확인하지 못해 도엽 선택을 중단했습니다.';
+        } else {
+          try {
+            query.clear();query.index=[];query.scale='25000';
+            for(const field of ['wkt','minx','miny','maxx','maxy'])query[field]=state.area[field];
+            window.integ.searchForm=3;
+            if(window.simple && window.simple.settings)window.simple.settings.scale='25000';
+            view.setCenter([input.x,input.y]);
+            const size=typeof map.getSize==='function' && map.getSize();
+            if(Array.isArray(size) && size.length===2 && size.every(n=>Number.isFinite(n) && n>0) && typeof view.fit==='function')
+              view.fit([input.x-input.radius,input.y-input.radius,input.x+input.radius,input.y+input.radius],size);
+            state.errorCode='scale';scale.value='25000';
+            panel.style.display='';
+            const shell=document.querySelector('main.map.total');
+            if(shell)shell.classList.add('_resultOn','_categoryOn','_mapListOn');
+            api.downArray=[];state.errorCode='layout';
+            state.state='waitingRows';state.started=Date.now();
+            api.completed('0',window.jQuery(choice));
+          } catch(error) {
+            state.state='blocked';state.message='공식 도엽 목록을 준비하지 못했습니다. 공식 화면에서 새로고침한 뒤 다시 시도해 주세요.';
+          }
         }
       }
     }
     if (state.state === 'waitingRows') {
       if(Date.now()-state.started>60000){state.state='blocked';state.message='포털 도엽 목록을 기다리는 시간이 초과되었습니다. 공식 화면에서 목록을 확인해 주세요.';}
-      const all = Array.from(document.querySelectorAll('input[name="cb_suchi"]'));
-      const available=state.downloadItems.map(r=>String(r.num));
-      const rows = available.map(n=>all.filter(e=>e.getAttribute('num')===n &&
-        e.getAttribute('maptype')==='0' && e.getAttribute('scale')==='25000' && e.getAttribute('fileext')==='dxf'));
-      if (state.state==='waitingRows' && rows.every(r=>r.length===1)) {
-        if(rows.some((r,i)=>r[0].getAttribute('nam')!==state.downloadItems[i].name ||
-            r[0].getAttribute('hisno')!==String(state.downloadItems[i].historyNo)))
-          return result('blocked','검색 자료와 신청 도엽의 이름·이력이 다릅니다. 신청을 진행하지 않았습니다.');
-        all.forEach(e=>{if(e.checked){e.checked=false;changed(e);}});
-        rows.forEach(r=>{r[0].checked=true;changed(r[0]);});
-        const selected = window.MEASURE_API.downArray;
-        if (!Array.isArray(selected) || selected.length!==available.length || selected.some(r=>
-          r.orderTp!=='0' || r.mapScale!=='25000' || r.ext!=='dxf' || !available.includes(r.mapNo)))
-          return result('blocked','선택한 도엽과 포털 신청 목록이 다릅니다. 신청을 진행하지 않았습니다.');
-        state.state='selected';
+      if (isDem) {
+        const all = Array.from(document.querySelectorAll('input[name="cb_dem"]'));
+        const rows = state.downloadItems.map(item=>all.filter(e=>e.getAttribute('num')===String(item.num) &&
+          e.getAttribute('year')===String(item.year)));
+        if (state.state==='waitingRows' && rows.every(r=>r.length>=1)) {
+          if(rows.some((r,i)=>(r[0].getAttribute('mapname') || r[0].getAttribute('nam'))!==state.downloadItems[i].name))
+            return result('blocked','검색 자료와 신청 DEM 도엽의 이름이 다릅니다. 신청을 진행하지 않았습니다.');
+          all.forEach(e=>{if(e.checked){e.checked=false;changed(e);}});
+          rows.forEach(r=>{r[0].checked=true;changed(r[0]);});
+          state.state='selected';
+        }
+      } else {
+        const all = Array.from(document.querySelectorAll('input[name="cb_suchi"]'));
+        const available=state.downloadItems.map(r=>String(r.num));
+        const rows = available.map(n=>all.filter(e=>e.getAttribute('num')===n &&
+          e.getAttribute('maptype')==='0' && e.getAttribute('scale')==='25000' && e.getAttribute('fileext')==='dxf'));
+        if (state.state==='waitingRows' && rows.every(r=>r.length===1)) {
+          if(rows.some((r,i)=>r[0].getAttribute('nam')!==state.downloadItems[i].name ||
+              r[0].getAttribute('hisno')!==String(state.downloadItems[i].historyNo)))
+            return result('blocked','검색 자료와 신청 도엽의 이름·이력이 다릅니다. 신청을 진행하지 않았습니다.');
+          all.forEach(e=>{if(e.checked){e.checked=false;changed(e);}});
+          rows.forEach(r=>{r[0].checked=true;changed(r[0]);});
+          const selected = window.MEASURE_API.downArray;
+          if (!Array.isArray(selected) || selected.length!==available.length || selected.some(r=>
+            r.orderTp!=='0' || r.mapScale!=='25000' || r.ext!=='dxf' || !available.includes(r.mapNo)))
+            return result('blocked','선택한 도엽과 포털 신청 목록이 다릅니다. 신청을 진행하지 않았습니다.');
+          state.state='selected';
+        }
       }
     }
     return result(state.state,state.message,{items:state.items || [],downloadItems:state.downloadItems || [],
@@ -230,34 +322,63 @@
           const records=Array.isArray(input.records)?input.records:[input.record];
           if(!records.length || records.length>100 || records.some(r=>!r) ||
               new Set(records.map(r=>String(r.num))).size!==records.length)throw new Error('selection');
-          const all=Array.from(document.querySelectorAll('input[name="cb_suchi"]'));
-          state.validationStep='checkboxes';
-          const checks=records.map(metadata=>{
-            const matches=all.filter(e=>e.getAttribute('num')===String(metadata.num) &&
-              e.getAttribute('maptype')==='0' && e.getAttribute('scale')==='25000' && e.getAttribute('fileext')==='dxf');
-            if(matches.length!==1 || matches[0].getAttribute('nam')!==metadata.name ||
-                matches[0].getAttribute('hisno')!==String(metadata.historyNo))throw new Error('selection');
-            return matches[0];
-          });
-          // One application contains every verified uncached sheet. Preserve
-          // the records: closing the official form clears its selection array.
-          for(const check of all)if(check.checked && !checks.includes(check)){check.checked=false;changed(check);}
-          for(const check of checks)if(!check.checked){check.checked=true;changed(check);}
-          const rows=window.MEASURE_API && window.MEASURE_API.downArray;
-          state.validationStep='rows';
-          if(!Array.isArray(rows) || rows.length!==records.length || records.some(metadata=>
-              rows.filter(r=>r.mapNo===String(metadata.num) && r.mapName===metadata.name &&
-                String(r.mapHistoryNo)===String(metadata.historyNo) && r.orderTp==='0' && r.mapScale==='25000' && r.ext==='dxf').length!==1) ||
-              typeof window.downloadMapData!=='function')throw new Error('selection');
-          const previous=document.querySelector('.popup.mapApplication.online input[name="onBrthdy"]');
-          state.validationStep='modal';
-          if(visible(previous))throw new Error('openForm');
-          state.previousBirth=previous;
-          // Do not call fnCloseModal here: it also clears the verified selection.
-          // setModalPopup replaces the old hidden body when the new response arrives.
-          state.state='waitingForm';
-          state.validationStep='open';
-          window.downloadMapData('1','online',rows.slice(),null);
+          if(isDem) {
+            const all=Array.from(document.querySelectorAll('input[name="cb_dem"]'));
+            state.validationStep='checkboxes';
+            const checks=records.map(metadata=>{
+              const matches=all.filter(e=>e.getAttribute('num')===String(metadata.num) &&
+                e.getAttribute('year')===String(metadata.year));
+              if(!matches.length || (matches[0].getAttribute('mapname') || matches[0].getAttribute('nam'))!==metadata.name)
+                throw new Error('selection');
+              return matches[0];
+            });
+            for(const check of all)if(check.checked && !checks.includes(check)){check.checked=false;changed(check);}
+            for(const check of checks)if(!check.checked){check.checked=true;changed(check);}
+            state.validationStep='rows';
+            if(typeof window.downloadMapData!=='function')throw new Error('selection');
+            const rows=records.map(metadata=>({
+              types:(metadata.sigu && metadata.sigu!=='undefined')?'bound':'index',
+              years:String(metadata.year),
+              nums:String(metadata.num),
+              names:String(metadata.name)
+            }));
+            const previous=document.querySelector('.popup.mapApplication.online input[name="onBrthdy"]');
+            state.validationStep='modal';
+            if(visible(previous))throw new Error('openForm');
+            state.previousBirth=previous;
+            state.state='waitingForm';
+            state.validationStep='open';
+            window.downloadMapData('4','online',rows,null);
+          } else {
+            const all=Array.from(document.querySelectorAll('input[name="cb_suchi"]'));
+            state.validationStep='checkboxes';
+            const checks=records.map(metadata=>{
+              const matches=all.filter(e=>e.getAttribute('num')===String(metadata.num) &&
+                e.getAttribute('maptype')==='0' && e.getAttribute('scale')==='25000' && e.getAttribute('fileext')==='dxf');
+              if(matches.length!==1 || matches[0].getAttribute('nam')!==metadata.name ||
+                  matches[0].getAttribute('hisno')!==String(metadata.historyNo))throw new Error('selection');
+              return matches[0];
+            });
+            // One application contains every verified uncached sheet. Preserve
+            // the records: closing the official form clears its selection array.
+            for(const check of all)if(check.checked && !checks.includes(check)){check.checked=false;changed(check);}
+            for(const check of checks)if(!check.checked){check.checked=true;changed(check);}
+            const rows=window.MEASURE_API && window.MEASURE_API.downArray;
+            state.validationStep='rows';
+            if(!Array.isArray(rows) || rows.length!==records.length || records.some(metadata=>
+                rows.filter(r=>r.mapNo===String(metadata.num) && r.mapName===metadata.name &&
+                  String(r.mapHistoryNo)===String(metadata.historyNo) && r.orderTp==='0' && r.mapScale==='25000' && r.ext==='dxf').length!==1) ||
+                typeof window.downloadMapData!=='function')throw new Error('selection');
+            const previous=document.querySelector('.popup.mapApplication.online input[name="onBrthdy"]');
+            state.validationStep='modal';
+            if(visible(previous))throw new Error('openForm');
+            state.previousBirth=previous;
+            // Do not call fnCloseModal here: it also clears the verified selection.
+            // setModalPopup replaces the old hidden body when the new response arrives.
+            state.state='waitingForm';
+            state.validationStep='open';
+            window.downloadMapData('1','online',rows.slice(),null);
+          }
         }).catch(()=>{
           if(window.__kaTopographicOrder!==state)return;
           if(state.state==='checkingLogin' && ++state.loginFailures<3){
@@ -287,31 +408,36 @@
     if(!visible(form))return result('waitingForm');
     const birth=form.querySelector('input[name="onBrthdy"]'), purpose=form.querySelector('#onPurchsPurps');
     const detail=form.querySelector('input[name="onDetailCn"]');
+    const basis=form.querySelector('input[name="onBasis"]');
     if(!birth || !purpose || purpose.tagName!=='SELECT')return result('blocked','신청서 구조가 달라 자동 입력을 중단했습니다. 포털에서 신청서를 확인해 주세요.');
     if(!birth.value.trim() && input.birthDate){birth.value=input.birthDate;changed(birth);}
     if(!purpose.value && input.purpose && Array.from(purpose.options).some(o=>o.value==='BAAAC00008')){
       purpose.value='BAAAC00008';changed(purpose);
     }
     if(purpose.value==='BAAAC00008' && detail && !detail.value.trim() && input.purpose){detail.value=input.purpose;changed(detail);}
+    if(basis && !basis.value.trim() && input.purpose){basis.value=input.purpose;changed(basis);}
     if(!birth.value.trim())return result('input','신청에 필요한 생년월일이 비어 있습니다. 아래 입력란 또는 공식 신청서에 입력해 주세요.');
     if(!purpose.value || (purpose.value==='BAAAC00008' && (!detail || !detail.value.trim())))
       return result('input','사용목적이 비어 있습니다. 아래 입력란 또는 공식 신청서에 입력해 주세요.');
+    if(isDem && basis && !basis.value.trim())
+      return result('input','신청에 필요한 상세용도가 비어 있습니다. 아래 입력란 또는 공식 신청서에 입력해 주세요.');
     const agree=form.querySelector('input[name="onChkAgree"]#agree');
     const submit=button(form,'다운로드');
     if(!agree || !['radio','checkbox'].includes(agree.type) || submit.length!==1 || typeof window.checkValidation!=='function')
       return result('blocked','준수사항 또는 다운로드 버튼을 정확히 확인하지 못했습니다. 공식 신청서에서 계속해 주세요.');
     if(input.command==='form')return result('ready');
     agree.checked=true;changed(agree);
-    if(!window.checkValidation('1','online'))return result('input','공식 신청서의 필수 항목을 확인해 주세요.');
+    if(!window.checkValidation(isDem?'4':'1','online'))return result('input','공식 신청서의 필수 항목을 확인해 주세요.');
     const events=window.jQuery && window.jQuery(document);
     if(!events || typeof events.on!=='function' || typeof events.off!=='function')
       return result('blocked','공식 신청 결과를 확인할 수 없어 자동 제출을 중단했습니다.');
     const submission=window.__kaTopographicSubmission={key,number:input.number,state:'pending',started:Date.now()};
     events.off('ajaxComplete.kaTopographicOrder');
+    const orderEndpoint = isDem ? '/pd/shbtManage/shbtInsertTritVidoDem.do' : '/pd/shbtManage/shbtInsertNRM.do';
     events.on('ajaxComplete.kaTopographicOrder',function(event,xhr,settings){
       if(window.__kaTopographicSubmission!==submission)return;
       let url;try{url=new URL(settings.url,location.href);}catch(e){return;}
-      if(url.origin!==location.origin || url.pathname!=='/pd/shbtManage/shbtInsertNRM.do')return;
+      if(url.origin!==location.origin || url.pathname!==orderEndpoint)return;
       // Observe only outcome flags. Never retain request bodies or personal data.
       let data=xhr.responseJSON;
       if(!data){try{data=JSON.parse(xhr.responseText);}catch(e){submission.state='failed';return;}}
@@ -343,15 +469,23 @@
       if(!Array.isArray(files) || !files.length)return result('waitingFiles');
       const records=Array.isArray(input.records)?input.records:[{num:input.number}];
       const numbers=records.map(r=>String(r.num));
-      if(!numbers.length || numbers.some(n=>!/^\d{6}$/.test(n)) || new Set(numbers).size!==numbers.length)
+      const sheetRe=isDem?/^\d{5,6}$/:/^\d{6}$/;
+      if(!numbers.length || numbers.some(n=>!sheetRe.test(n)) || new Set(numbers).size!==numbers.length)
         return result('blocked','신청 도엽 목록을 확인하지 못했습니다.');
+      const allowedExt=isDem?/\.(zip|img|tif|tiff|dem|txt|asc|xml)$/i:/\.(zip|dxf|xml)$/i;
+      const payloadExt=isDem?/\.(zip|img|tif|tiff|dem|txt|asc)$/i:/\.(dxf|zip)$/i;
       const names=new Set(),urls=new Set(),ids=new Set(),manifest=[];let total=0;
       for(const file of files) {
         const name=file.printFileName,bytes=Number(file.fileSize);
         let url;try{url=new URL(file.downloadUrl,location.href);}catch(e){return result('blocked','공식 파일 주소가 올바르지 않습니다.');}
-        const matched=typeof name==='string'?numbers.filter(n=>new RegExp('(^|[^0-9])'+n+'([^0-9]|$)').test(name)):[];
+        let matched=typeof name==='string'?numbers.filter(n=>new RegExp('(^|[^0-9])'+n+'([^0-9]|$)').test(name)):[];
+        if(isDem && matched.length!==1 && typeof name==='string') {
+          const byName=records.filter(r=>r && r.name && name.includes(String(r.name))).map(r=>String(r.num));
+          if(byName.length===1)matched=byName;
+          else if(numbers.length===1)matched=[numbers[0]];
+        }
         if(matched.length!==1 || typeof file.id!=='string' || !file.id || file.id.length>256 || ids.has(file.id) ||
-            !/\.(zip|dxf|xml)$/i.test(name) || names.has(name) || urls.has(url.href) ||
+            !allowedExt.test(name) || names.has(name) || urls.has(url.href) ||
             !Number.isSafeInteger(bytes) || bytes<=0 || url.origin!==location.origin ||
             url.pathname!=='/nlippd/pd/innorix/innorixDownLoad2.do' ||
             url.searchParams.get('fileName')!==name || !url.searchParams.get('directory'))
@@ -360,7 +494,7 @@
         manifest.push({id:file.id,name,number:matched[0],bytes});
       }
       if(total>1000000000)return result('blocked','선택한 파일 크기가 1GB를 넘습니다.');
-      if(numbers.some(n=>!manifest.some(f=>f.number===n && /\.(dxf|zip)$/i.test(f.name))))
+      if(numbers.some(n=>!manifest.some(f=>f.number===n && payloadExt.test(f.name))))
         return result('blocked','일부 신청 도엽의 지도 파일이 준비되지 않았습니다.');
       const snapshot=JSON.stringify(files.map(f=>[f.id,f.printFileName,f.fileSize,f.downloadUrl]));
       if(input.command==='files'){

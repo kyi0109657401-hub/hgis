@@ -33,6 +33,12 @@ public:
                                     const QString& sourceDemPath, const QString& surveyPath,
                                     QString* errorOut = nullptr);
 
+  // 국토지리정보원 자동 다운로드 창에서 받은 DEM 압축(.zip) 또는 래스터(.img/.tif/.dem/.txt/.asc) 파일을
+  // 조사 폴더의 DEM 폴더에 풀고 국토지리원 DEM·광역지형도·경사도로 즉시 적재한다.
+  static bool importNgiiDemDownload(QgsProject* project, QgsMapCanvas* canvas,
+                                    const QString& downloadedPath, const QString& surveyPath,
+                                    QString* errorOut = nullptr);
+
   // 국토지리정보원 수치지형도(3D 등고선 F001*·표고점 F002*)로부터 나무·건물이 제거된
   // 순수 지형(Bare-earth) 정밀 국토지리원 DEM을 보간·합성하고 광역지형도·경사도와 함께 등록한다.
   static QString buildNgiiDemFromTopographic(QgsProject* project, QgsMapCanvas* canvas,
