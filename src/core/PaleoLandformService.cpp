@@ -118,32 +118,33 @@ QString normalizeTerrainCode(QString code) {
 
 bool addPaleoFeature(QgsVectorLayer* paleo, const QgsGeometry& geom, const QString& kind,
                      const QString& note) {
-  if (!paleo || geom.isEmpty() || geom.area() < 1.0)
-    return false;
-  QgsFeature f(paleo->fields());
-  f.setGeometry(geom);
+  if (!paleo || geom.isEmpty() || geom.area() < 1.0) return false;
   const int iKind = paleo->fields().indexOf(QStringLiteral("kind"));
   const int iNote = paleo->fields().indexOf(QStringLiteral("note"));
   const int iStatus = paleo->fields().indexOf(QStringLiteral("status"));
-  if (iKind >= 0)
-    f.setAttribute(iKind, kind);
-  if (iNote >= 0)
-    f.setAttribute(iNote, note);
-  if (iStatus >= 0)
-    f.setAttribute(iStatus, QStringLiteral("가설"));
-  return paleo->addFeature(f);
+  const QVector<QgsGeometry> parts =
+      geom.isMultipart() ? geom.asGeometryCollection() : QVector<QgsGeometry>{geom};
+  bool anyAdded = false;
+  for (QgsGeometry part : parts) {
+    part.convertToSingleType();
+    if (part.isEmpty() || part.area() < 1.0) continue;
+    QgsFeature f(paleo->fields());
+    f.setGeometry(part);
+    if (iKind >= 0) f.setAttribute(iKind, kind);
+    if (iNote >= 0) f.setAttribute(iNote, note);
+    if (iStatus >= 0) f.setAttribute(iStatus, QStringLiteral("가설"));
+    if (paleo->addFeature(f)) anyAdded = true;
+  }
+  return anyAdded;
 }
 
 }  // namespace
 
 QString PaleoLandformService::suggestKindFromTerrain(const QString& code) {
   const QString c = normalizeTerrainCode(code);
-  if (c == QLatin1String("04"))
-    return QStringLiteral("선상지");
-  if (c == QLatin1String("05"))
-    return QStringLiteral("해성평탄");
-  if (c == QLatin1String("08"))
-    return QStringLiteral("하안단구");
+  if (c == QLatin1String("04")) return QStringLiteral("선상지");
+  if (c == QLatin1String("05")) return QStringLiteral("해성평탄");
+  if (c == QLatin1String("08")) return QStringLiteral("하안단구");
   return {};
 }
 
@@ -151,14 +152,12 @@ PaleoLandformService::SeedResult PaleoLandformService::seedInterpretationFromSoi
     QgsVectorLayer* soilLayer, QgsVectorLayer* paleoLayer, QString* errorOut) {
   SeedResult out;
   if (!soilLayer || !soilLayer->isValid() || !paleoLayer || !paleoLayer->isValid()) {
-    if (errorOut)
-      *errorOut = QStringLiteral("토양도 또는 고지형 판독 레이어가 없습니다.");
+    if (errorOut) *errorOut = QStringLiteral("토양도 또는 고지형 판독 레이어가 없습니다.");
     return out;
   }
   if (soilLayer->fields().indexOf(QStringLiteral("soil_type_geo")) < 0 ||
       paleoLayer->fields().indexOf(QStringLiteral("kind")) < 0) {
-    if (errorOut)
-      *errorOut = QStringLiteral("필요한 필드가 없습니다.");
+    if (errorOut) *errorOut = QStringLiteral("필요한 필드가 없습니다.");
     return out;
   }
 

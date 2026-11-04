@@ -1,9 +1,18 @@
 #include "core/GeoInfoBoreholeService.h"
 #include "core/KigamPaleoService.h"
 #include "core/PaleoDemClassifier.h"
+#include "core/PaleoLandformService.h"
 
 #include <QStandardPaths>
+#include <QTemporaryDir>
 #include <QtTest/QtTest>
+#include <qgsapplication.h>
+#include <qgsfeature.h>
+#include <qgsfield.h>
+#include <qgsfields.h>
+#include <qgsgeometry.h>
+#include <qgsproject.h>
+#include <qgsvectorlayer.h>
 
 class TestPaleoSources : public QObject {
   Q_OBJECT
@@ -102,7 +111,37 @@ private slots:
     QCOMPARE(levee.kind, QStringLiteral("자연제방"));
     QVERIFY(levee.note.contains(QStringLiteral("시추 BH-1 충적 4.5m(SM)·생토 6.2m")));
   }
+
+  void seedInterpretationFromSoil_splitsMultiPolygonsIntoGpkg() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString gpkg = dir.filePath(QStringLiteral("paleo_multipoly.gpkg"));
+    QgsProject* proj = QgsProject::instance();
+    proj->clear();
+
+    QgsVectorLayer soil(QStringLiteral("MultiPolygon?crs=EPSG:5186"), QStringLiteral("토양도"),
+                        QStringLiteral("memory"));
+    soil.dataProvider()->addAttributes(
+        {QgsField(QStringLiteral("soil_type_geo"), QMetaType::Type::QString)});
+    soil.updateFields();
+    QgsFeature f(soil.fields());
+    f.setGeometry(QgsGeometry::fromWkt(QStringLiteral(
+        "MULTIPOLYGON(((200000 500000, 200200 500000, 200200 500200, 200000 500200, 200000 500000)),"
+        "((200400 500000, 200500 500000, 200500 500100, 200400 500100, 200400 500000)))")));
+    f.setAttribute(QStringLiteral("soil_type_geo"), QStringLiteral("08"));
+    QgsFeatureList list{f};
+    QVERIFY(soil.dataProvider()->addFeatures(list));
+
+    QString err;
+    QgsVectorLayer* paleo = PaleoLandformService::ensureInterpretationLayer(proj, gpkg, &err);
+    QVERIFY2(paleo != nullptr, qPrintable(err));
+    const auto res = PaleoLandformService::seedInterpretationFromSoil(&soil, paleo, &err);
+    QVERIFY2(err.isEmpty(), qPrintable(err));
+    QVERIFY(res.added >= 1);
+    QVERIFY(paleo->featureCount() >= 2);
+    proj->clear();
+  }
 };
 
-QTEST_GUILESS_MAIN(TestPaleoSources)
+QTEST_MAIN(TestPaleoSources)
 #include "test_paleo_sources.moc"

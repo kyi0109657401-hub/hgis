@@ -541,7 +541,7 @@ void MainWindow::startReferenceDownload(ReferenceMapKind kind, const QgsRectangl
     }
     return PreparedReferenceMap{};
   };
-  auto complete = [window, dialog, generation, kind, title](const PreparedReferenceMap& result) {
+  auto complete = [window, dialog, generation, kind, title, extent](const PreparedReferenceMap& result) {
     if (dialog) { dialog->hide(); dialog->deleteLater(); }
     if (!window) return;
     window->m_referenceDownload = nullptr;
@@ -551,6 +551,20 @@ void MainWindow::startReferenceDownload(ReferenceMapKind kind, const QgsRectangl
       return;
     }
     if (!result.isReady()) {
+      if (kind == ReferenceMapKind::KigamPaleo || kind == ReferenceMapKind::GeoInfoBorehole) {
+        window->statusBar()->showMessage(result.error, 8000);
+        if (kind == ReferenceMapKind::KigamPaleo &&
+            !QgsProject::instance()->property("paleoGeoInfoAttempted").toBool()) {
+          QgsProject::instance()->setProperty("paleoGeoInfoAttempted", true);
+          const QString bhGpkg = QDir(QFileInfo(window->m_surveyPath).absolutePath())
+                                     .filePath(QStringLiteral("시추주상도_국토지반정보.gpkg"));
+          QTimer::singleShot(0, window, [window, extent, bhGpkg] {
+            if (window && !window->m_closingWindow)
+              window->startReferenceDownload(ReferenceMapKind::GeoInfoBorehole, extent, bhGpkg);
+          });
+        }
+        return;
+      }
       window->notify(Notice::Warning, title + QStringLiteral(" 내려받기 실패"), result.error.isEmpty()
           ? QStringLiteral("지도 자료를 받지 못했습니다. 인터넷 연결을 확인한 뒤 다시 시도하세요.") : result.error);
       return;
@@ -596,6 +610,21 @@ void MainWindow::startReferenceDownload(ReferenceMapKind kind, const QgsRectangl
           if (window && !window->m_closingWindow && generation == window->m_surveyGeneration)
             window->startPaleoLandform();
         });
+      } else if (kind == ReferenceMapKind::KigamPaleo &&
+                 !QgsProject::instance()->property("paleoGeoInfoAttempted").toBool()) {
+        QgsProject::instance()->setProperty("paleoGeoInfoAttempted", true);
+        const QString bhGpkg = QDir(QFileInfo(window->m_surveyPath).absolutePath())
+                                   .filePath(QStringLiteral("시추주상도_국토지반정보.gpkg"));
+        QTimer::singleShot(0, window, [window, extent, bhGpkg] {
+          if (window && !window->m_closingWindow)
+            window->startReferenceDownload(ReferenceMapKind::GeoInfoBorehole, extent, bhGpkg);
+        });
+      } else if (kind == ReferenceMapKind::GeoInfoBorehole) {
+        if (auto* paleo = LayerOps::findByLayerKey(QgsProject::instance(),
+                                                   QLatin1String(PaleoLandformService::kLayerKey))) {
+          PaleoDemClassifier::enrichInterpretationLayer(QgsProject::instance(), paleo);
+          PaleoLandformService::applyInterpretationStyle(paleo);
+        }
       }
     } catch (...) {
       QgsProject::instance()->setDirty(true);

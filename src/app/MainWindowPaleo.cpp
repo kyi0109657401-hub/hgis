@@ -2,6 +2,7 @@
 #include "KaIcons.h"
 #include "KaUserError.h"
 #include "MainWindow.h"
+#include "core/BasemapDsm.h"
 #include "core/GeoInfoBoreholeService.h"
 #include "core/KaLogExcept.h"
 #include "core/KigamPaleoService.h"
@@ -228,7 +229,20 @@ void MainWindow::startPaleoLandform() {
       PaleoLandformService::seedInterpretationFromSoil(soil, layer, &err);
   const int enriched = PaleoDemClassifier::enrichInterpretationLayer(proj, layer);
   PaleoLandformService::applyInterpretationStyle(layer);
+  if (QgsLayerTreeLayer* pn = proj->layerTreeRoot()->findLayer(layer->id()))
+    pn->setItemVisibilityChecked(true);
+  if (QgsRasterLayer* dem = BasemapDsm::findDem(proj)) {
+    if (dem->opacity() > 0.6) {
+      dem->setOpacity(0.55);
+      dem->triggerRepaint();
+    }
+  }
   beginEdit(layer);
+  if (!m_referenceDownload && !proj->property("paleoKigamAttempted").toBool()) {
+    proj->setProperty("paleoKigamAttempted", true);
+    const QString outGpkg = QDir(surveyDir).filePath(QStringLiteral("고지형_KIGAM.gpkg"));
+    startReferenceDownload(ReferenceMapKind::KigamPaleo, ext5186, outGpkg);
+  }
   if (seeded.added > 0) {
     const QString extra =
         enriched > 0
