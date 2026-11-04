@@ -7,14 +7,14 @@ C++20/Qt6 독립 실행형 필드고고학 HGIS. **OSGeo4W qgis-dev (QGIS 4.x) �
 
 **처음 쓰는 사람:** [docs/user/quick-start.md](docs/user/quick-start.md) (새 조사 → 배경 → 그리기 → 검수·제출, 단축키, 용어, 문제 해결)
 
-**저장소:** https://github.com/kesekikwon-netizen/hgis · 브랜치 `main`
+**저장소:** https://github.com/kyi0109657401-hub/hgis · 브랜치 `main`
 
 ## 다른 PC에서 바로 개발
 
 상세: [`docs/other-pc-setup.md`](docs/other-pc-setup.md)
 
 ```powershell
-git clone https://github.com/kesekikwon-netizen/hgis.git
+git clone https://github.com/kyi0109657401-hub/hgis.git
 cd hgis
 # 기준 PC와 같은 OSGeo4W 판을 복사해 온다 (install-deps 는 설치한 날의 qgis-dev 를 받는다)
 .\scripts\osgeo4w-bundle.ps1 -Import E:\ka-hgis-sdk

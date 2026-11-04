@@ -68,6 +68,6 @@
   - 기존 테스트의 기댓값을 바꾸거나 검사 줄을 수정·제거할 때는 커밋 메시지에 반드시 `시험 변경: <이유>` 줄을 포함한다.
 
 ## 5. Git·워크트리·포터블 동기화
-- 원격 저장소는 `https://github.com/kesekikwon-netizen/hgis.git` (`origin/main`)이며 로컬 `D:\hgis` 클론과 동일하다.
+- 원격 저장소는 `https://github.com/kyi0109657401-hub/hgis.git` (`origin/main`)이며 로컬 `D:\hgis` 클론과 동일하다.
 - 검증된 커밋은 `git push origin HEAD:main`으로 푸시하고 `git -C D:/hgis pull --ff-only origin main`으로 `D:\hgis`까지 동기화한다.
 - 바탕화면에 개인용 포터블 폴더(`Strata-포터블-개인용-*`)가 있을 때 앱 변경 후 최신 `build/Release/ka-hgis.exe`를 포터블 폴더에도 복사하고 포터블 폴더 기준 `--smoke-quit`으로 검증한다.
