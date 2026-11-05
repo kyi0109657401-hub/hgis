@@ -11,9 +11,12 @@ import { mask, route } from './jev-skill-route.mjs';
 
 const HOOK = path.join(path.dirname(fileURLToPath(import.meta.url)), 'jev-skill-route.mjs');
 
-const answer = (choice, confidence) => async () => ({
+const answer = (choice, confidence, context7Noul = 0.1) => async () => ({
   ok: true, costUsd: 0.00002,
-  answers: { stage: { type: 'choice', choice, confidence, probabilities: { [choice]: confidence } } },
+  answers: {
+    stage: { type: 'choice', choice, confidence, probabilities: { [choice]: confidence } },
+    context7: { type: 'noul', noul: context7Noul },
+  },
 });
 const tempLog = (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-route-'));
@@ -65,8 +68,50 @@ test('a confident debugging pick becomes one line naming the stage and its skill
 });
 
 test('new features point to the request record and clear edits to the test-first skill', async (t) => {
-  assert.match(await route(input('버튼 하나 넣어 줘'), { ask: answer('new_feature', 0.9), logFile: tempLog(t) }), /capture-intent/);
+  const nf = await route(input('버튼 하나 넣어 줘'), { ask: answer('new_feature', 0.9), logFile: tempLog(t) });
+  assert.match(nf, /capture-intent/);
+  assert.match(nf, /superpowers:brainstorming/);
+  assert.match(await route(input('계획 세워 줘'), { ask: answer('planning', 0.85), logFile: tempLog(t) }), /superpowers:writing-plans/);
   assert.match(await route(input('그 오타 고쳐'), { ask: answer('code_change', 0.7), logFile: tempLog(t) }), /superpowers:test-driven-development/);
+  assert.match(await route(input('검증하고 커밋해'), { ask: answer('verification', 0.88), logFile: tempLog(t) }), /superpowers:verification-before-completion/);
+});
+
+test('context7 noul judgment recommends context7-mcp alongside superpowers or standalone', async (t) => {
+  const both = await route(input('QGIS QgsRasterLayer API로 렌더러 만들어 줘'), {
+    ask: answer('code_change', 0.84, 0.89),
+    logFile: tempLog(t),
+  });
+  assert.match(both, /superpowers:test-driven-development/);
+  assert.match(both, /context7-mcp/);
+  assert.match(both, /0\.89/);
+
+  const docOnly = await route(input('Qt6 QQuickWidget 최신 API 시그니처 알려줘'), {
+    ask: answer('question', 0.92, 0.81),
+    logFile: tempLog(t),
+  });
+  assert.match(docOnly, /context7-mcp/);
+  assert.match(docOnly, /\(Jev 추천\)/);
+});
+
+test('Antigravity PreInvocation input uses lastUserInput and deduplicates repeated invocations in the same turn', async (t) => {
+  const logFile = tempLog(t);
+  let calls = 0;
+  const ask = async () => {
+    calls++;
+    return answer('debugging', 0.91, 0.75)();
+  };
+  const agyInput = {
+    conversationId: 'conv-123',
+    lastUserInput: 'QGIS 지도가 안 떠요',
+    workspacePaths: ['D:/hgis'],
+    transcriptPath: 'D:/t.jsonl',
+  };
+  const first = await route(agyInput, { ask, logFile });
+  assert.match(first, /superpowers:systematic-debugging/);
+  assert.match(first, /context7-mcp/);
+  const second = await route(agyInput, { ask, logFile });
+  assert.equal(second, null);
+  assert.equal(calls, 1);
 });
 
 test('an unsure pick or a plain question adds nothing', async (t) => {

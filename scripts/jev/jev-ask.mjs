@@ -6,6 +6,7 @@
 // 키는 사용자 환경 변수 TYPESAFE_API_KEY 에서만 읽고 출력·로그에 쓰지 않는다. 조사 자료·좌표·도면 원본은 보내지 않는다.
 import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import https from 'node:https';
 import { pathToFileURL } from 'node:url';
 
 export const MODEL = 'jev-1.13.0';  // 판정 기준을 이 판으로 맞춘다(별칭 jev-latest 는 예고 없이 바뀐다)
@@ -31,7 +32,31 @@ export function loadKey(env = process.env, readUserEnv = readWindowsUserEnv) {
 
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 
-export async function ask(request, { key = loadKey(), fetchImpl = fetch, retries = 2, backoffMs = 500,
+// Node v24 on Windows crashes in libuv (UV_HANDLE_CLOSING) or hangs 4 s in undici keep-alive pool when
+// global fetch() + AbortSignal.timeout() is used in short-lived CLI hooks. node:https with agent:false exits cleanly in <0.3 s.
+function httpsFetch(url, { method = 'POST', headers = {}, body = '', timeoutMs = 15000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const req = https.request(url, {
+      method,
+      headers: { ...headers, connection: 'close', 'content-length': Buffer.byteLength(body) },
+      agent: false,
+      timeout: timeoutMs,
+    }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf8');
+        const status = res.statusCode ?? 0;
+        resolve({ ok: status >= 200 && status < 300, status, json: async () => JSON.parse(text) });
+      });
+    });
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    req.on('error', reject);
+    req.end(body);
+  });
+}
+
+export async function ask(request, { key = loadKey(), fetchImpl = httpsFetch, retries = 2, backoffMs = 500,
                                      timeoutMs = 15000 } = {}) {
   if (!key) return { ok: false, reason: 'no-key', message: 'TYPESAFE_API_KEY 가 설정되지 않았다' };
   const body = JSON.stringify({ model: MODEL, state: request.state ?? null, questions: request.questions });
@@ -42,7 +67,8 @@ export async function ask(request, { key = loadKey(), fetchImpl = fetch, retries
         method: 'POST',
         headers: { authorization: 'Bearer ' + key, 'content-type': 'application/json' },
         body,
-        signal: AbortSignal.timeout(timeoutMs),
+        timeoutMs,
+        signal: fetchImpl === httpsFetch ? undefined : AbortSignal.timeout(timeoutMs),
       });
     } catch (error) {
       if (attempt < retries) {
@@ -72,5 +98,5 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const request = JSON.parse(readFileSync(process.argv[2] ?? 0, 'utf8'));
   const result = await ask(request);
   console.log(JSON.stringify(result, null, 1));
-  process.exit(result.ok ? 0 : result.reason === 'no-key' ? 2 : 3);
+  process.exitCode = result.ok ? 0 : result.reason === 'no-key' ? 2 : 3;
 }
