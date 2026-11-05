@@ -57,7 +57,12 @@ bool GeoInfoBoreholeService::parseSichudanJson(const QByteArray& rawBytes, Boreh
   QStringList parts;
   double bestThick = -1.0;
   QString bestDesc;
-  for (const QJsonValue& lv : obj.value(QStringLiteral("LAYER")).toArray()) {
+  const QJsonArray layerArr = obj.value(QStringLiteral("LAYER")).toArray();
+  if (layerArr.isEmpty()) {
+    if (errorOut) *errorOut = QStringLiteral("시추공 지층(LAYER) 정보가 비어 있습니다.");
+    return false;
+  }
+  for (const QJsonValue& lv : layerArr) {
     const QJsonObject lo = lv.toObject();
     StratumLayer s;
     s.fromM = lo.value(QStringLiteral("from")).toDouble();
@@ -72,22 +77,35 @@ bool GeoInfoBoreholeService::parseSichudanJson(const QByteArray& rawBytes, Boreh
                      .arg(s.fromM, 0, 'f', 1)
                      .arg(s.toM, 0, 'f', 1)
                      .arg(s.name, s.uscs));
-    if (s.name.contains(QStringLiteral("매립")) || s.name.contains(QStringLiteral("성토"))) {
+    const bool isFill =
+        s.name.contains(QStringLiteral("매립")) || s.name.contains(QStringLiteral("성토"));
+    const bool isRockOrWeathered =
+        s.name.contains(QStringLiteral("풍화")) || s.name.contains(QStringLiteral("연암")) ||
+        s.name.contains(QStringLiteral("경암")) || s.name.contains(QStringLiteral("기반암")) ||
+        s.name.contains(QStringLiteral("보통암")) || s.name.contains(QStringLiteral("암반"));
+    const QString u = s.uscs.trimmed().toUpper();
+    const bool isNaturalSoil =
+        s.name.contains(QStringLiteral("퇴적")) || s.name.contains(QStringLiteral("충적")) ||
+        s.name.contains(QStringLiteral("붕적")) || s.name.contains(QStringLiteral("하성")) ||
+        s.name.contains(QStringLiteral("점토")) || s.name.contains(QStringLiteral("실트")) ||
+        s.name.contains(QStringLiteral("모래")) || s.name.contains(QStringLiteral("자갈")) ||
+        s.name.contains(QStringLiteral("사질")) || s.name.contains(QStringLiteral("점성")) ||
+        u.startsWith(QLatin1Char('C')) || u.startsWith(QLatin1Char('M')) ||
+        u.startsWith(QLatin1Char('S')) || u.startsWith(QLatin1Char('G')) ||
+        u.startsWith(QLatin1Char('O')) || u.startsWith(QLatin1String("PT"));
+    if (isFill) {
       out->fillDepthM = std::max(out->fillDepthM, s.toM);
-    } else if (s.name.contains(QStringLiteral("퇴적")) || s.name.contains(QStringLiteral("충적")) ||
-               s.name.contains(QStringLiteral("붕적")) || s.name.contains(QStringLiteral("하성"))) {
+    } else if (isRockOrWeathered) {
+      if (out->weatheredDepthM < 0.0) out->weatheredDepthM = s.fromM;
+    } else if (out->weatheredDepthM < 0.0 && isNaturalSoil) {
       if (out->alluvialThicknessM <= 0.0) out->alluvialFromM = s.fromM;
       out->alluvialToM = std::max(out->alluvialToM, s.toM);
       out->alluvialThicknessM += thick;
       if (thick > bestThick) {
         bestThick = thick;
         out->dominantUscs = s.uscs;
-        bestDesc = s.desc;
+        bestDesc = s.desc.isEmpty() ? s.name : s.desc;
       }
-    } else if (out->weatheredDepthM < 0.0 &&
-               (s.name.contains(QStringLiteral("풍화")) || s.name.contains(QStringLiteral("연암")) ||
-                s.name.contains(QStringLiteral("경암")) || s.name.contains(QStringLiteral("기반암")))) {
-      out->weatheredDepthM = s.fromM;
     }
   }
   out->layerSummary = parts.join(QStringLiteral(" / "));

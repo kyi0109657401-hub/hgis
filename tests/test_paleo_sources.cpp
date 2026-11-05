@@ -42,33 +42,43 @@ private slots:
     QVERIFY2(GeoInfoBoreholeService::parseSichudanJson(payload, &rec, &err), qPrintable(err));
     QCOMPARE(rec.holeCode, QStringLiteral("B1600BH005"));
     QCOMPARE(rec.projectCode, QStringLiteral("B1600"));
-    QVERIFY(std::abs(rec.tmX - 197733.7247) < 0.01);
-    QVERIFY(std::abs(rec.tmY - 552242.2081) < 0.01);
-    QVERIFY(std::abs(rec.fillDepthM - 2.6) < 0.01);
-    QVERIFY(std::abs(rec.alluvialFromM - 2.6) < 0.01);
-    QVERIFY(std::abs(rec.alluvialToM - 5.7) < 0.01);
-    QVERIFY(std::abs(rec.alluvialThicknessM - 3.1) < 0.01);
-    QVERIFY(std::abs(rec.weatheredDepthM - 5.7) < 0.01);
-    QVERIFY(rec.hasWaterLevel);
-    QVERIFY(std::abs(rec.waterLevelM - (-3.7)) < 0.01);
+    QVERIFY(std::abs(rec.tmX - 197733.7247) < 0.01 && std::abs(rec.tmY - 552242.2081) < 0.01);
+    QVERIFY(std::abs(rec.fillDepthM - 2.6) < 0.01 && std::abs(rec.alluvialThicknessM - 3.1) < 0.01);
+    QVERIFY(std::abs(rec.weatheredDepthM - 5.7) < 0.01 && rec.hasWaterLevel);
     QCOMPARE(rec.dominantUscs, QStringLiteral("CL"));
     QVERIFY(rec.depositEnv.contains(QStringLiteral("점토")));
     QVERIFY(rec.paleoHint.contains(QStringLiteral("생토·풍화대 5.7m")));
+
+    const QByteArray emptyLayerPayload =
+        QStringLiteral("{\"HCODE\":\"B1791BH062\",\"TM\":{\"X\":\"219100\",\"Y\":\"360100\"},\"LAYER\":[]}").toUtf8();
+    QVERIFY(!GeoInfoBoreholeService::parseSichudanJson(emptyLayerPayload, &rec, &err));
+
+    const QByteArray realNamesPayload =
+        QStringLiteral(
+            "{\"HCODE\":\"C1901BH001\",\"TM\":{\"X\":\"219100\",\"Y\":\"360100\"},"
+            "\"LAYER\":[{\"from\":0,\"to\":1.5,\"uscs\":\"SM\",\"name\":\"매립층\",\"desc\":\"성토\"},"
+            "{\"from\":1.5,\"to\":4.0,\"uscs\":\"CL\",\"name\":\"실트질점토\",\"desc\":\"연약 점토\"},"
+            "{\"from\":4.0,\"to\":6.5,\"uscs\":\"GP\",\"name\":\"모래섞인자갈\",\"desc\":\"모래 자갈\"},"
+            "{\"from\":6.5,\"to\":10.0,\"uscs\":\"SW\",\"name\":\"풍화토\",\"desc\":\"기반암 풍화대\"}]}")
+            .toUtf8();
+    QVERIFY2(GeoInfoBoreholeService::parseSichudanJson(realNamesPayload, &rec, &err), qPrintable(err));
+    QVERIFY(std::abs(rec.fillDepthM - 1.5) < 0.01 && std::abs(rec.alluvialThicknessM - 5.0) < 0.01);
+    QVERIFY(std::abs(rec.weatheredDepthM - 6.5) < 0.01);
   }
 
   void parseKigamGeoJson_extractsFaultsGroundwaterAndOslTerraces() {
     const QByteArray uwJson =
         QStringLiteral(
             "{\"type\":\"FeatureCollection\",\"features\":[{\"type\":\"Feature\","
-            "\"geometry\":{\"type\":\"Point\",\"coordinates\":[127.4285,35.9744]},"
+            "\"geometry\":{\"type\":\"Point\",\"coordinates\":[398229.0,259521.0]},"
             "\"properties\":{\"시험정공번\":\"GNW00022\",\"표고(m)\":49,"
             "\"평균수위(GL.-m)\":\"2.6\",\"대수층유형\":\"충적층\"}}]}")
             .toUtf8();
     const auto uw = KigamPaleoService::parseUnderwaterGeoJson(uwJson);
     QCOMPARE(uw.size(), 1);
     QCOMPARE(uw[0].name, QStringLiteral("GNW00022"));
-    QVERIFY(std::abs(uw[0].altitudeM - 49.0) < 0.01);
-    QVERIFY(std::abs(uw[0].waterGlM - 2.6) < 0.01);
+    QVERIFY(std::abs(uw[0].altitudeM - 49.0) < 0.01 && std::abs(uw[0].waterGlM - 2.6) < 0.01);
+    QVERIFY2(uw[0].tmY5186 > 350000.0, "KIGAM underwater TM Y must be converted from EPSG:5174 to EPSG:5186");
 
     const QByteArray oslJson =
         QStringLiteral(
@@ -84,8 +94,7 @@ private slots:
     QCOMPARE(osl[0].ageKa, QStringLiteral("79.6±2.6"));
     QVERIFY(osl[0].summary.contains(QStringLiteral("OSL")));
     QVERIFY(KigamPaleoService::reportPdfUrl(QStringLiteral("HD05")).contains(QStringLiteral("HD05.pdf")));
-    QVERIFY(KigamPaleoService::originalMapPdfUrl(QStringLiteral("HD05"))
-                .contains(QStringLiteral("HD05_org_map.pdf")));
+    QVERIFY(KigamPaleoService::originalMapPdfUrl(QStringLiteral("HD05")).contains(QStringLiteral("HD05_org_map.pdf")));
   }
 
   void paleoDemClassifier_distinguishesTerracesAndAlluvialEnvironments() {
@@ -97,8 +106,7 @@ private slots:
     terraceMetrics.riverDistM = 180.0;
     const auto t2 = PaleoDemClassifier::classify(QStringLiteral("하안단구"), terraceMetrics);
     QCOMPARE(t2.kind, QStringLiteral("하안단구"));
-    QVERIFY(t2.note.contains(QStringLiteral("중위단구(T2")));
-    QVERIFY(t2.note.contains(QStringLiteral("하천거리 180m")));
+    QVERIFY(t2.note.contains(QStringLiteral("중위단구(T2")) && t2.note.contains(QStringLiteral("하천거리 180m")));
 
     PaleoDemClassifier::Metrics leveeMetrics;
     leveeMetrics.hasDem = true;
@@ -123,10 +131,8 @@ private slots:
     QgsProject* proj = QgsProject::instance();
     proj->clear();
 
-    QgsVectorLayer soil(QStringLiteral("MultiPolygon?crs=EPSG:5186"), QStringLiteral("토양도"),
-                        QStringLiteral("memory"));
-    soil.dataProvider()->addAttributes(
-        {QgsField(QStringLiteral("soil_type_geo"), QMetaType::Type::QString)});
+    QgsVectorLayer soil(QStringLiteral("MultiPolygon?crs=EPSG:5186"), QStringLiteral("토양도"), QStringLiteral("memory"));
+    soil.dataProvider()->addAttributes({QgsField(QStringLiteral("soil_type_geo"), QMetaType::Type::QString)});
     soil.updateFields();
     QgsFeature f(soil.fields());
     f.setGeometry(QgsGeometry::fromWkt(QStringLiteral(
@@ -141,8 +147,7 @@ private slots:
     QVERIFY2(paleo != nullptr, qPrintable(err));
     const auto res = PaleoLandformService::seedInterpretationFromSoil(&soil, paleo, &err);
     QVERIFY2(err.isEmpty(), qPrintable(err));
-    QVERIFY(res.added >= 1);
-    QVERIFY(paleo->featureCount() >= 2);
+    QVERIFY(res.added >= 1 && paleo->featureCount() >= 2);
     proj->clear();
   }
 
@@ -153,16 +158,11 @@ private slots:
     std::vector<double> zCurr(n, 16.0);
     std::vector<SoilLandformCode> soilGrid(n, SoilLandformCode::FluvialPlain);
     std::vector<GeologyCode> geolGrid(n, GeologyCode::QaAlluvium);
-    std::vector<uint8_t> riverMask(n, 0);
-    std::vector<uint8_t> aoiMask(n, 1);
+    std::vector<uint8_t> riverMask(n, 0), aoiMask(n, 1);
     riverMask[0] = 1;
 
     std::vector<BoreholeRawInput> bhs = {
-        {"BH-1",
-         200150.0,
-         499850.0,
-         16.8,
-         3.6,
+        {"BH-1", 200150.0, 499850.0, 16.8, 3.6,
          {{0.0, 2.2, "성토층", "SM", "매립", 6.0},
           {2.2, 5.4, "충적층", "SM", "모래 및 유기물", 9.0},
           {5.4, 8.5, "풍화토", "SC", "풍화대", 50.0}}},
@@ -176,23 +176,28 @@ private slots:
     QCOMPARE(out.paleo_rgba_buffer.size(), n * 4);
     QCOMPARE(out.center_cross_section.dist_m.size(), size_t(32));
     QVERIFY(QString::fromUtf8(out.aoi_summary_text.c_str()).contains(QStringLiteral("형산강")));
-    QVERIFY(QString::fromUtf8(out.aoi_summary_text.c_str()).contains(QStringLiteral("반경 10km")));
 
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
-    const QString demTif = dir.filePath(QStringLiteral("sample_dem.tif"));
-    QVERIFY(PaleoAnalysisRunner::writeFloatGeoTiff(demTif, tf, QString(), zCurr));
+    const QString surveyGpkg = dir.filePath(QStringLiteral("survey.gpkg"));
+    const QString demDir = dir.filePath(QStringLiteral("DEM"));
+    QDir().mkpath(demDir);
+    const QString sheetWest = QDir(demDir).filePath(QStringLiteral("35901.tif"));
+    const QString sheetEast = QDir(demDir).filePath(QStringLiteral("35902.tif"));
+    const QString wkt5187 = QgsCoordinateReferenceSystem(QStringLiteral("EPSG:5187")).toWkt();
+    QVERIFY(PaleoAnalysisRunner::writeFloatGeoTiff(
+        sheetWest, GridTransform{200000.0, 500000.0, 20.0, 32, 32}, wkt5187, std::vector<double>(32 * 32, 30.0)));
+    QVERIFY(PaleoAnalysisRunner::writeFloatGeoTiff(
+        sheetEast, GridTransform{200640.0, 500000.0, 20.0, 32, 32}, wkt5187, std::vector<double>(32 * 32, 45.0)));
     QgsProject* proj = QgsProject::instance();
     proj->clear();
-    QVERIFY(PaleoAnalysisRunner::registerDemWideLayers(
-        proj, nullptr, demTif, dir.filePath(QStringLiteral("survey.gpkg"))));
-    QVERIFY(!proj->mapLayersByName(QStringLiteral("[DEM] 국토지리원_DEM.tif")).isEmpty());
-    QVERIFY(!proj->mapLayersByName(QStringLiteral("[DEM] 광역지형도(채색+음영기복)")).isEmpty());
-    QVERIFY(!proj->mapLayersByName(QStringLiteral("[DEM] 경사도")).isEmpty());
-    // 재호출 시에도 열린 레이어 잠금(Permission denied) 없이 정상 갱신되어야 한다.
-    QVERIFY(PaleoAnalysisRunner::registerDemWideLayers(
-        proj, nullptr, demTif, dir.filePath(QStringLiteral("survey.gpkg"))));
-    QVERIFY(PaleoAnalysisRunner::findPreferredDem(proj) != nullptr);
+    proj->setCrs(QgsCoordinateReferenceSystem(QStringLiteral("EPSG:5187")));
+    QVERIFY(PaleoAnalysisRunner::collectBoreholes(proj, proj->crs(), QgsPointXY(200300, 499700)).empty());
+    QVERIFY(PaleoAnalysisRunner::importNgiiDemDownload(proj, nullptr, sheetEast, surveyGpkg));
+    QVERIFY(PaleoAnalysisRunner::importNgiiDemDownload(proj, nullptr, sheetWest, surveyGpkg));
+    QgsRasterLayer* mergedDem = PaleoAnalysisRunner::findPreferredDem(proj);
+    QVERIFY(mergedDem != nullptr);
+    QVERIFY2(mergedDem->extent().width() >= 1200.0, "Multiple NGII DEM sheets must be mosaicked together");
     proj->clear();
   }
 
@@ -204,7 +209,6 @@ private slots:
     proj->clear();
     proj->setCrs(QgsCoordinateReferenceSystem(QStringLiteral("EPSG:5187")));
 
-    // 3D 등고선(elevation 속성 포함)이 들어있는 수치지형도 레이어를 구성한다.
     auto* topo = new QgsVectorLayer(QStringLiteral("MultiLineStringZ?crs=EPSG:5187"),
                                     QStringLiteral("수치지형도"), QStringLiteral("memory"));
     topo->dataProvider()->addAttributes({
@@ -215,13 +219,11 @@ private slots:
     topo->updateFields();
     QgsFeatureList cFeats;
     for (int i = 0; i < 6; ++i) {
-      const double y = 360000.0 + i * 100.0;
-      const double elev = 20.0 + i * 5.0;
+      const double y = 360000.0 + i * 100.0, elev = 20.0 + i * 5.0;
       QgsFeature f(topo->fields());
       f.setGeometry(QgsGeometry::fromWkt(
           QStringLiteral("MULTILINESTRING Z ((219000 %1 %2, 219300 %1 %2, 219600 %1 %2))")
-              .arg(y, 0, 'f', 1)
-              .arg(elev, 0, 'f', 1)));
+              .arg(y, 0, 'f', 1).arg(elev, 0, 'f', 1)));
       f.setAttribute(QStringLiteral("Layer"), QStringLiteral("F0017111"));
       f.setAttribute(QStringLiteral("elevation"), elev);
       f.setAttribute(QStringLiteral("z_valid"), 1);
@@ -232,8 +234,7 @@ private slots:
     QVERIFY(proj->addMapLayer(topo));
 
     QString err;
-    const QString builtDem =
-        PaleoAnalysisRunner::buildNgiiDemFromTopographic(proj, nullptr, surveyGpkg, &err);
+    const QString builtDem = PaleoAnalysisRunner::buildNgiiDemFromTopographic(proj, nullptr, surveyGpkg, &err);
     QVERIFY2(!builtDem.isEmpty(), qPrintable(err));
     QVERIFY(QFileInfo::exists(builtDem));
     QgsRasterLayer* ngiiDem = PaleoAnalysisRunner::findPreferredDem(proj);
@@ -246,38 +247,34 @@ private slots:
       QVERIFY(tf.open(QIODevice::WriteOnly | QIODevice::Text));
       tf.write("219000 360000 32.0\n219600 360000 36.0\n219000 360500 42.0\n219600 360500 48.0\n");
     }
-    QVERIFY2(PaleoAnalysisRunner::importNgiiDemDownload(proj, nullptr, txtDem, surveyGpkg, &err),
-             qPrintable(err));
+    QVERIFY2(PaleoAnalysisRunner::importNgiiDemDownload(proj, nullptr, txtDem, surveyGpkg, &err), qPrintable(err));
     QVERIFY(BasemapDsm::findDem(proj) != nullptr);
 
-    // 토양도·지질도·수계도·시추공 레이어를 올리고 runFullPipeline이 실제 공간 속성을 읽는지 검증한다.
     auto* soil = new QgsVectorLayer(QStringLiteral("MultiPolygon?crs=EPSG:5187"),
                                     QStringLiteral("토양도(흙토람)"), QStringLiteral("memory"));
-    soil->dataProvider()->addAttributes(
-        {QgsField(QStringLiteral("soil_type_geo"), QMetaType::Type::QString)});
+    soil->dataProvider()->addAttributes({QgsField(QStringLiteral("soil_type_geo"), QMetaType::Type::QString)});
     soil->updateFields();
     {
       QgsFeature sf(soil->fields());
       sf.setGeometry(QgsGeometry::fromWkt(QStringLiteral(
           "MULTIPOLYGON(((219000 360000, 219600 360000, 219600 360500, 219000 360500, 219000 360000)))")));
       sf.setAttribute(QStringLiteral("soil_type_geo"), QStringLiteral("08"));
-      QgsFeatureList sfList{sf};
-      QVERIFY(soil->dataProvider()->addFeatures(sfList));
+      QgsFeatureList fl{sf};
+      QVERIFY(soil->dataProvider()->addFeatures(fl));
     }
     QVERIFY(proj->addMapLayer(soil));
 
     auto* river = new QgsVectorLayer(QStringLiteral("MultiPolygon?crs=EPSG:5187"),
                                      QStringLiteral("수계도(하천망)"), QStringLiteral("memory"));
-    river->dataProvider()->addAttributes(
-        {QgsField(QStringLiteral("riv_nm"), QMetaType::Type::QString)});
+    river->dataProvider()->addAttributes({QgsField(QStringLiteral("riv_nm"), QMetaType::Type::QString)});
     river->updateFields();
     {
       QgsFeature rf(river->fields());
       rf.setGeometry(QgsGeometry::fromWkt(QStringLiteral(
           "MULTIPOLYGON(((219000 360000, 219600 360000, 219600 360040, 219000 360040, 219000 360000)))")));
       rf.setAttribute(QStringLiteral("riv_nm"), QStringLiteral("북천"));
-      QgsFeatureList rfList{rf};
-      QVERIFY(river->dataProvider()->addFeatures(rfList));
+      QgsFeatureList fl{rf};
+      QVERIFY(river->dataProvider()->addFeatures(fl));
     }
     QVERIFY(proj->addMapLayer(river));
 

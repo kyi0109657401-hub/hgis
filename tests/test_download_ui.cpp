@@ -214,6 +214,9 @@ private slots:
              "DEM mode must populate onBasis (상세용도) required for mapType 4");
     QVERIFY2(script.contains(QLatin1String("/pd/shbtManage/shbtInsertTritVidoDem.do")),
              "DEM mode must observe /pd/shbtManage/shbtInsertTritVidoDem.do order completion");
+    QVERIFY2(script.contains(QLatin1String("toSel.options")) &&
+                 script.contains(QLatin1String("o.value==='0'")),
+             "DEM mode must ensure #toDemYear has option value='0' before selecting it");
   }
 };
 

@@ -38,6 +38,7 @@ public:
   KaPaleoStudio(QgsProject* project, QgsMapCanvas* mainCanvas, QWidget* parent = nullptr);
 
   void setSurveyPath(const QString& surveyPath) { m_surveyPath = surveyPath; }
+  void refreshSourceStatus();
   void runAnalysis();
   void handleDeleteKey();
   KaLayerInformationView* layerTree() const { return m_layerTree; }
@@ -45,6 +46,8 @@ public:
 
 signals:
   void requestApplyToDrawingSheet();
+  void requestOpenSourceDialog();
+  void requestDemDownload();
 
 protected:
   bool eventFilter(QObject* watched, QEvent* event) override;
@@ -61,6 +64,7 @@ private:
   QLabel* m_mapPreview = nullptr;
   KaPaleoCrossSectionWidget* m_crossSection = nullptr;
   QPlainTextEdit* m_summaryBox = nullptr;
+  QLabel* m_sourcesStatusLabel = nullptr;
   QLabel* m_statusLabel = nullptr;
   hgis::paleo::PaleoAnalysisResult m_lastResult;
 };

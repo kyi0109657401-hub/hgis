@@ -9,9 +9,11 @@
 #include "PaleoDemClassifier.h"
 #include "PaleoLandformService.h"
 
+#include <QColor>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QFont>
 #include <algorithm>
 #include <cmath>
 
@@ -23,9 +25,15 @@
 #include <qgsfeaturerequest.h>
 #include <qgsfeedback.h>
 #include <qgsgeometry.h>
+#include <qgslayoutitemlabel.h>
+#include <qgslayoutmanager.h>
+#include <qgslayoutpoint.h>
+#include <qgslayoutsize.h>
 #include <qgsmapcanvas.h>
+#include <qgsprintlayout.h>
 #include <qgsproject.h>
 #include <qgsrasterlayer.h>
+#include <qgstextformat.h>
 #include <qgsvectorlayer.h>
 
 namespace {
@@ -131,22 +139,14 @@ hgis::paleo::PaleoAnalysisResult PaleoAnalysisRunner::runFullPipeline(QgsProject
       surveyPath.isEmpty() ? QDir::temp().filePath(QStringLiteral("ka-hgis-paleo"))
                            : QFileInfo(surveyPath).absoluteDir().filePath(QStringLiteral("고지형분석"));
   QDir().mkpath(paleoDir);
-  ensureReferenceLayers(project, canvas, toEpsg5186Box(ext5k, workCrs, project),
-                        toEpsg5186Box(ext10k, workCrs, project), paleoDir, feedback);
+  if (feedback) {
+    ensureReferenceLayers(project, canvas, toEpsg5186Box(ext5k, workCrs, project),
+                          toEpsg5186Box(ext10k, workCrs, project), paleoDir, feedback);
+  }
 
   buildNgiiDemFromTopographic(project, canvas, surveyPath, nullptr);
   QgsRasterLayer* demLayer = findPreferredDem(project);
-  if (!demLayer || !QFileInfo::exists(demLayer->source())) {
-    try {
-      const QgsCoordinateTransform toWgs(workCrs, QgsCoordinateReferenceSystem(QStringLiteral("EPSG:4326")), project->transformContext());
-      const auto demPrep = DemDownloadService::prepare(toWgs.transformBoundingBox(ext5k), QDir(paleoDir).filePath(QStringLiteral("국토지리원_DEM.tif")), feedback);
-      if (demPrep.isReady()) {
-        demPrep.retainFiles();
-        registerDemWideLayers(project, canvas, demPrep.rasterUri, surveyPath, nullptr);
-        demLayer = findPreferredDem(project);
-      }
-    } catch (...) { KA_LOG_EXCEPT(); }
-  } else {
+  if (demLayer && QFileInfo::exists(demLayer->source())) {
     registerDemWideLayers(project, canvas, demLayer->source(), surveyPath, nullptr);
     demLayer = findPreferredDem(project);
   }
@@ -157,7 +157,7 @@ hgis::paleo::PaleoAnalysisResult PaleoAnalysisRunner::runFullPipeline(QgsProject
   hgis::paleo::GridTransform tf{gridBox.xMinimum(), gridBox.yMaximum(), cellSz, kGridN, kGridN};
   const size_t totalCells = static_cast<size_t>(kGridN) * kGridN;
 
-  std::vector<double> zCurr(totalCells, 18.0);
+  std::vector<double> zCurr(totalCells, 0.0);
   if (demLayer && demLayer->isValid() && QFileInfo::exists(demLayer->source())) {
     try {
       QgsRectangle dBox = gridBox;
@@ -167,13 +167,17 @@ hgis::paleo::PaleoAnalysisResult PaleoAnalysisRunner::runFullPipeline(QgsProject
       DemAnalyzer::RasterInfo rInfo;
       if (DemAnalyzer::readFloatWindow(demLayer->source(), dBox.xMinimum(), dBox.yMinimum(), dBox.xMaximum(), dBox.yMaximum(), kGridN, &zBuf, &rInfo, nullptr) &&
           rInfo.width > 0 && rInfo.height > 0) {
+        double lastValid = 0.0;
+        for (float v : zBuf) {
+          if (std::isfinite(v) && (!rInfo.hasNoData || v != rInfo.noData)) { lastValid = v; break; }
+        }
         for (int r = 0; r < kGridN; ++r) {
           const int sr = std::clamp(r * rInfo.height / kGridN, 0, rInfo.height - 1);
           for (int c = 0; c < kGridN; ++c) {
             const int sc = std::clamp(c * rInfo.width / kGridN, 0, rInfo.width - 1);
             const float v = zBuf[static_cast<size_t>(sr) * rInfo.width + sc];
-            if (std::isfinite(v) && (!rInfo.hasNoData || v != rInfo.noData))
-              zCurr[static_cast<size_t>(r) * kGridN + c] = v;
+            if (std::isfinite(v) && (!rInfo.hasNoData || v != rInfo.noData)) lastValid = v;
+            zCurr[static_cast<size_t>(r) * kGridN + c] = lastValid;
           }
         }
       }
@@ -208,7 +212,6 @@ hgis::paleo::PaleoAnalysisResult PaleoAnalysisRunner::runFullPipeline(QgsProject
   }
 
   QString riverName = QStringLiteral("인접 하천");
-  bool hasRiverCells = false;
   for (QgsMapLayer* l : project->mapLayers()) {
     auto* rv = qobject_cast<QgsVectorLayer*>(l);
     if (!rv || !rv->isValid() || (!rv->name().contains(QStringLiteral("수계")) && rv->fields().indexOf(QStringLiteral("riv_nm")) < 0))
@@ -231,14 +234,8 @@ hgis::paleo::PaleoAnalysisResult PaleoAnalysisRunner::runFullPipeline(QgsProject
     }
     rasterizePolyGrid(rv, workCrs, project, gridBox, tf, [&](const QgsFeature&, size_t idx) {
       riverMask[idx] = 1;
-      hasRiverCells = true;
     });
     break;
-  }
-  if (!hasRiverCells) {
-    for (int r = 0; r < kGridN; ++r)
-      for (int c = kGridN / 5; c <= kGridN / 5 + 3 && c < kGridN; ++c)
-        riverMask[static_cast<size_t>(r) * kGridN + c] = 1;
   }
 
   const auto rawBoreholes = collectBoreholes(project, workCrs, centerPt);
@@ -272,4 +269,27 @@ hgis::paleo::PaleoAnalysisResult PaleoAnalysisRunner::runFullPipeline(QgsProject
   applyEvidenceToSheet(project, res);
   if (canvas) LayerOps::refreshCanvasIfIdle(canvas);
   return res;
+}
+
+bool PaleoAnalysisRunner::applyEvidenceToSheet(QgsProject* project,
+                                               const hgis::paleo::PaleoAnalysisResult& res) {
+  if (!project || !project->layoutManager()) return false;
+  auto* ly = dynamic_cast<QgsPrintLayout*>(project->layoutManager()->layoutByName(QStringLiteral("user_sheet")));
+  if (!ly) return false;
+  auto* label = dynamic_cast<QgsLayoutItemLabel*>(ly->itemById(QStringLiteral("ka_paleo_evidence_box")));
+  if (!label) {
+    label = new QgsLayoutItemLabel(ly);
+    label->setId(QStringLiteral("ka_paleo_evidence_box"));
+    ly->addLayoutItem(label);
+    label->attemptMove(QgsLayoutPoint(12.0, 210.0, Qgis::LayoutUnit::Millimeters));
+    label->attemptResize(QgsLayoutSize(185.0, 48.0, Qgis::LayoutUnit::Millimeters));
+  }
+  label->setText(QString::fromUtf8(res.aoi_summary_text.c_str()));
+  label->setBackgroundEnabled(true);
+  label->setBackgroundColor(QColor(255, 255, 255, 235));
+  label->setFrameEnabled(true);
+  QgsTextFormat tf;
+  tf.setFont(QFont(QStringLiteral("Malgun Gothic"), 7)); tf.setSize(7.2); tf.setColor(QColor(20, 24, 31));
+  label->setTextFormat(tf); label->setMarginX(2.0); label->setMarginY(2.0);
+  return true;
 }

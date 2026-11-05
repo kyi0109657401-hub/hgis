@@ -149,7 +149,7 @@
             const shell=document.querySelector('main.map.total');
             if(shell)shell.classList.add('_resultOn','_categoryOn','_mapListOn');
             const toSel=document.getElementById('toDemYear'),fromSel=document.getElementById('fromDemYear');
-            if(toSel)toSel.value='0';
+            if(toSel){if(!Array.from(toSel.options).some(o=>o.value==='0')){const opt=document.createElement('option');opt.value='0';opt.textContent='전체';toSel.appendChild(opt);}toSel.value='0';}
             if(fromSel && state.maxYear) {
               if(!Array.from(fromSel.options).some(o=>o.value===state.maxYear)){
                 const opt=document.createElement('option');opt.value=state.maxYear;opt.textContent=state.maxYear+'년';

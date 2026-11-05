@@ -78,7 +78,7 @@ QList<HoleCandidate> fetchHoleCandidatesInExtent(
     q.addQueryItem(QStringLiteral("I"), QStringLiteral("1"));
     q.addQueryItem(QStringLiteral("J"), QStringLiteral("1"));
     q.addQueryItem(QStringLiteral("INFO_FORMAT"), QStringLiteral("application/json"));
-    q.addQueryItem(QStringLiteral("FEATURE_COUNT"), QStringLiteral("40"));
+    q.addQueryItem(QStringLiteral("FEATURE_COUNT"), QStringLiteral("150"));
     url.setQuery(q);
 
     QNetworkRequest req(url);
@@ -110,6 +110,10 @@ QList<HoleCandidate> fetchHoleCandidatesInExtent(
           out.append({code, pt5186, hasPt});
         }
       }
+      const QgsPointXY center = extent5186.center();
+      std::sort(out.begin(), out.end(), [&center](const HoleCandidate& a, const HoleCandidate& b) {
+        return a.pt5186.sqrDist(center) < b.pt5186.sqrDist(center);
+      });
     }
   } catch (...) {
     KA_LOG_EXCEPT();
@@ -150,8 +154,8 @@ PreparedReferenceMap GeoInfoBoreholeService::prepare(
   mem.updateFields();
 
   QgsFeatureList feats;
-  const int limit = std::min<int>(candidates.size(), 25);
-  for (int i = 0; i < limit; ++i) {
+  const int limit = std::min<int>(candidates.size(), 120);
+  for (int i = 0; i < limit && feats.size() < 50; ++i) {
     if (feedback && feedback->isCanceled()) {
       result.status = PreparedReferenceMap::Status::Cancelled;
       return result;

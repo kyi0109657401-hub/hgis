@@ -94,6 +94,9 @@ QList<KigamPaleoService::FaultItem> KigamPaleoService::parseFaultGeoJson(const Q
 QList<KigamPaleoService::PointItem> KigamPaleoService::parseUnderwaterGeoJson(
     const QByteArray& rawJson) {
   QList<PointItem> out;
+  const QgsCoordinateReferenceSystem crs5174(QStringLiteral("EPSG:5174"));
+  const QgsCoordinateReferenceSystem crs5186(QStringLiteral("EPSG:5186"));
+  const QgsCoordinateTransform tr5174To5186(crs5174, crs5186, QgsCoordinateTransformContext());
   const QJsonArray arr =
       QJsonDocument::fromJson(rawJson).object().value(QStringLiteral("features")).toArray();
   for (const QJsonValue& v : arr) {
@@ -106,8 +109,19 @@ QList<KigamPaleoService::PointItem> KigamPaleoService::parseUnderwaterGeoJson(
       const double c0 = coords[0].toDouble();
       const double c1 = coords[1].toDouble();
       if (c0 > 200.0 || c1 > 200.0) {
-        item.tmX5186 = c0;
-        item.tmY5186 = c1;
+        QgsPointXY pt(c0, c1);
+        if (tr5174To5186.isValid()) {
+          try {
+            pt = tr5174To5186.transform(pt);
+          } catch (...) {
+            KA_LOG_EXCEPT();
+            pt = QgsPointXY(c0, c1 + 100000.0);
+          }
+        } else {
+          pt = QgsPointXY(c0, c1 + 100000.0);
+        }
+        item.tmX5186 = pt.x();
+        item.tmY5186 = pt.y();
         item.hasTm5186 = true;
       } else {
         item.lon = c0;
@@ -178,7 +192,7 @@ PreparedReferenceMap KigamPaleoService::prepare(
       QStringLiteral("geoOpen:l_50k_geology_fault_latest"), b4326, 200, feedback);
   const QByteArray uwBytes = fetchWfsJson(
       QStringLiteral("https://data.kigam.re.kr/gives/geoserver/ows"),
-      QStringLiteral("GeoEnv:underwater_2019_avg"), b4326, 200, feedback);
+      QStringLiteral("GeoEnv:underwater_2019_avg"), QgsRectangle(), 500, feedback);
   const QByteArray upliftBytes = fetchWfsJson(
       QStringLiteral("https://data.kigam.re.kr/gives/geoserver/ows"),
       QStringLiteral("GeoEnv:nation_upliftrate_2023"), QgsRectangle(), 120, feedback);

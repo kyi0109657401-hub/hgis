@@ -191,6 +191,7 @@ std::vector<double> HgisPaleoEngine::idw_interpolate_grid(
 
 std::vector<hgis::paleo::BoreholeRawInput> PaleoAnalysisRunner::collectBoreholes(
     QgsProject* project, const QgsCoordinateReferenceSystem& workCrs, const QgsPointXY& centerPt) {
+  (void)centerPt;
   std::vector<hgis::paleo::BoreholeRawInput> out;
   if (QgsVectorLayer* bhLayer = GeoInfoBoreholeService::findBoreholeLayer(project)) {
     const QgsCoordinateTransform toWork(bhLayer->crs(), workCrs, project->transformContext());
@@ -200,8 +201,7 @@ std::vector<hgis::paleo::BoreholeRawInput> PaleoAnalysisRunner::collectBoreholes
     while (it.nextFeature(bf)) {
       if (!bf.hasGeometry()) continue;
       QgsPointXY pt = bf.geometry().asPoint();
-      if (needTr && !(workCrs.authid() == QLatin1String("EPSG:5187") &&
-                      bhLayer->crs().authid() == QLatin1String("EPSG:5186") && pt.x() < 300000.0)) {
+      if (needTr) {
         try {
           pt = toWork.transform(pt);
         } catch (...) {
@@ -220,12 +220,6 @@ std::vector<hgis::paleo::BoreholeRawInput> PaleoAnalysisRunner::collectBoreholes
       b.strata.push_back({weathM, weathM + 3.0, "풍화토층", "SM", "풍화대", 50.0});
       out.push_back(std::move(b));
     }
-  }
-  if (out.empty()) {
-    out.push_back({"BH-1", centerPt.x() - 60.0, centerPt.y() + 40.0, 16.8, 3.6,
-                   {{0.0, 2.2, "성토층", "SM", "매립", 6.0},
-                    {2.2, 5.4, "충적층", "SM", "모래 및 유기물", 8.0},
-                    {5.4, 8.5, "풍화토", "SC", "기반암 풍화토", 50.0}}});
   }
   return out;
 }

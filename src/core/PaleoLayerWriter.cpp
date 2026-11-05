@@ -5,7 +5,9 @@
 #include "ReferenceKind.h"
 #include "TopographicArchive.h"
 #include <QColor>
+#include <QCoreApplication>
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
 #include <QFont>
@@ -18,15 +20,9 @@
 #include <gdal_priv.h>
 #include <gdal_utils.h>
 #include <qgscoordinatereferencesystem.h>
-#include <qgslayoutitemlabel.h>
-#include <qgslayoutmanager.h>
-#include <qgslayoutpoint.h>
-#include <qgslayoutsize.h>
 #include <qgsmapcanvas.h>
-#include <qgsprintlayout.h>
 #include <qgsproject.h>
 #include <qgsrasterlayer.h>
-#include <qgstextformat.h>
 
 namespace {
 struct Stop { double z; uint8_t r, g, b; };
@@ -48,9 +44,20 @@ void hypsoColor(double z, uint8_t& r, uint8_t& g, uint8_t& b) noexcept {
   r = kHypsoStops.back().r; g = kHypsoStops.back().g; b = kHypsoStops.back().b;
 }
 
+QString safeOut(const QString& p) {
+  if (!QFileInfo::exists(p) || QFile::remove(p)) return p;
+  const QFileInfo fi(p);
+  for (int i = 1; i <= 50; ++i) {
+    const QString c = fi.dir().filePath(QStringLiteral("%1_%2.%3").arg(fi.completeBaseName()).arg(i).arg(fi.suffix()));
+    if (!QFileInfo::exists(c) || QFile::remove(c)) return c;
+  }
+  return p;
+}
+
 QgsRasterLayer* addOrReplaceNamedRaster(QgsProject* project, const QString& path, const QString& title) {
   if (!project || !QFileInfo::exists(path)) return nullptr;
   for (QgsMapLayer* l : project->mapLayersByName(title)) if (l) project->removeMapLayer(l->id());
+  QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
   auto* rl = new QgsRasterLayer(path, title, QStringLiteral("gdal"));
   if (!rl->isValid()) { delete rl; return nullptr; }
   LayerOps::markReferenceLayer(rl); LayerOps::applyLegendCrsLabel(rl);
@@ -128,32 +135,59 @@ bool PaleoAnalysisRunner::registerDemWideLayers(QgsProject* project, QgsMapCanva
   const QgsCoordinateReferenceSystem workCrs =
       project->crs().isValid() ? project->crs() : QgsCoordinateReferenceSystem(QStringLiteral("EPSG:5187"));
   GDALAllRegister(); CPLSetConfigOption("GDAL_FILENAME_IS_UTF8", "YES");
-  const bool sameDemPath = QFileInfo::exists(demOut) &&
-      QFileInfo(sourceDemPath).canonicalFilePath() == QFileInfo(demOut).canonicalFilePath();
-  for (const QString& title : {QStringLiteral("[DEM] 광역지형도(채색+음영기복)"), QStringLiteral("[DEM] 경사도")}) {
+  const bool sameDemPath =
+      QFileInfo(sourceDemPath).absolutePath() == QFileInfo(demOut).absolutePath() &&
+      QFileInfo(sourceDemPath).fileName().startsWith(QStringLiteral("국토지리원_DEM"));
+  for (const QString& title : {QStringLiteral("[DEM] 국토지리원_DEM.tif"),
+                               QStringLiteral("[DEM] 광역지형도(채색+음영기복)"),
+                               QStringLiteral("[DEM] 경사도")}) {
     for (QgsMapLayer* l : project->mapLayersByName(title)) if (l) project->removeMapLayer(l->id());
   }
-  if (!sameDemPath) {
-    for (QgsMapLayer* l : project->mapLayersByName(QStringLiteral("[DEM] 국토지리원_DEM.tif")))
-      if (l) project->removeMapLayer(l->id());
-    QFile::remove(demOut);
-    const QByteArray dstWkt = workCrs.toWkt().toUtf8();
-    GDALDatasetH srcDs = GDALOpen(sourceDemPath.toUtf8().constData(), GA_ReadOnly);
-    if (srcDs) {
-      const char* projRef = GDALGetProjectionRef(srcDs);
-      double srcGt[6] = {0}; GDALGetGeoTransform(srcDs, srcGt);
-      const char* srcSrs = (!projRef || !*projRef)
-          ? ((srcGt[0] >= 700000.0 && srcGt[3] >= 1300000.0) ? "EPSG:5179" : dstWkt.constData()) : nullptr;
-      const char* warpArgsWithSrc[] = {"-s_srs", srcSrs, "-t_srs", dstWkt.constData(), "-r", "bilinear", "-overwrite", nullptr};
-      const char* warpArgsNoSrc[] = {"-t_srs", dstWkt.constData(), "-r", "bilinear", "-overwrite", nullptr};
-      GDALWarpAppOptions* wOpts = GDALWarpAppOptionsNew(const_cast<char**>(srcSrs ? warpArgsWithSrc : warpArgsNoSrc), nullptr);
-      int err = 0;
-      if (GDALDatasetH warped = GDALWarp(demOut.toUtf8().constData(), nullptr, 1, &srcDs, wOpts, &err)) GDALClose(warped);
-      GDALClose(srcDs); GDALWarpAppOptionsFree(wOpts);
+  QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+  QStringList srcPaths;
+  auto addSrc = [&](const QString& p) {
+    if (QFileInfo::exists(p) && !srcPaths.contains(QFileInfo(p).canonicalFilePath()))
+      srcPaths.append(QFileInfo(p).canonicalFilePath());
+  };
+  if (!surveyPath.isEmpty()) {
+    const QString demDir = QFileInfo(surveyPath).absoluteDir().filePath(QStringLiteral("DEM"));
+    static const QRegularExpression rExt(QStringLiteral("^(img|tif|tiff|dem|asc|bil|flt)$"),
+                                         QRegularExpression::CaseInsensitiveOption);
+    QDirIterator it(demDir, QDir::Files, QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+      const QString f = it.next();
+      if (rExt.match(QFileInfo(f).suffix()).hasMatch()) addSrc(f);
     }
   }
-  QFile::remove(wideOut); QFile::remove(slopeOut);
-  const QString activeDem = QFileInfo::exists(demOut) ? demOut : sourceDemPath;
+  if (srcPaths.isEmpty()) addSrc(sourceDemPath);
+  QString activeDem = sourceDemPath;
+  if (!sameDemPath || srcPaths.size() > 1) {
+    const QString targetDem = safeOut(demOut);
+    const QByteArray dstWkt = workCrs.toWkt().toUtf8();
+    std::vector<GDALDatasetH> srcSets;
+    const char* srcSrs = nullptr;
+    for (const QString& sp : srcPaths) {
+      if (GDALDatasetH ds = GDALOpen(sp.toUtf8().constData(), GA_ReadOnly)) {
+        if (srcSets.empty() && (!GDALGetProjectionRef(ds) || !*GDALGetProjectionRef(ds))) {
+          double srcGt[6] = {0}; GDALGetGeoTransform(ds, srcGt);
+          srcSrs = (srcGt[0] >= 700000.0 && srcGt[3] >= 1300000.0) ? "EPSG:5179" : dstWkt.constData();
+        }
+        srcSets.push_back(ds);
+      }
+    }
+    if (!srcSets.empty()) {
+      const char* warpWithSrc[] = {"-s_srs", srcSrs, "-t_srs", dstWkt.constData(), "-r", "bilinear", "-overwrite", nullptr};
+      const char* warpNoSrc[] = {"-t_srs", dstWkt.constData(), "-r", "bilinear", "-overwrite", nullptr};
+      GDALWarpAppOptions* wOpts = GDALWarpAppOptionsNew(const_cast<char**>(srcSrs ? warpWithSrc : warpNoSrc), nullptr);
+      int err = 0;
+      if (GDALDatasetH warped = GDALWarp(targetDem.toUtf8().constData(), nullptr, static_cast<int>(srcSets.size()), srcSets.data(), wOpts, &err))
+        GDALClose(warped);
+      for (GDALDatasetH ds : srcSets) GDALClose(ds);
+      GDALWarpAppOptionsFree(wOpts);
+      if (QFileInfo::exists(targetDem)) activeDem = targetDem;
+    }
+  }
+  const QString targetWide = safeOut(wideOut), targetSlope = safeOut(slopeOut);
   GDALDataset* ds = static_cast<GDALDataset*>(GDALOpen(activeDem.toUtf8().constData(), GA_ReadOnly));
   if (!ds) return false;
   const int w = std::clamp(ds->GetRasterXSize(), 4, 1024), h = std::clamp(ds->GetRasterYSize(), 4, 1024);
@@ -182,8 +216,8 @@ bool PaleoAnalysisRunner::registerDemWideLayers(QgsProject* project, QgsMapCanva
     wideRgba[i * 4 + 2] = static_cast<uint8_t>(std::clamp(std::lround(b * factor), 0L, 255L));
     wideRgba[i * 4 + 3] = 230;
   }
-  writeRgbaGeoTiff(wideOut, tf, wkt, wideRgba, errorOut);
-  writeFloatGeoTiff(slopeOut, tf, wkt, slopeDeg, errorOut);
+  writeRgbaGeoTiff(targetWide, tf, wkt, wideRgba, errorOut);
+  writeFloatGeoTiff(targetSlope, tf, wkt, slopeDeg, errorOut);
   for (QgsMapLayer* old : ReferenceKind::find(project, QString::fromLatin1(ReferenceKind::kDem))) {
     if (old && old->name() != QStringLiteral("[DEM] 국토지리원_DEM.tif")) project->removeMapLayer(old->id());
   }
@@ -191,8 +225,8 @@ bool PaleoAnalysisRunner::registerDemWideLayers(QgsProject* project, QgsMapCanva
     ReferenceKind::tag(demLayer, QString::fromLatin1(ReferenceKind::kDem));
     DemPresentation::apply(demLayer, QStringLiteral("viewport"), demLayer->extent());
   }
-  addOrReplaceNamedRaster(project, slopeOut, QStringLiteral("[DEM] 경사도"));
-  addOrReplaceNamedRaster(project, wideOut, QStringLiteral("[DEM] 광역지형도(채색+음영기복)"));
+  addOrReplaceNamedRaster(project, targetSlope, QStringLiteral("[DEM] 경사도"));
+  addOrReplaceNamedRaster(project, targetWide, QStringLiteral("[DEM] 광역지형도(채색+음영기복)"));
   if (canvas) LayerOps::refreshCanvasIfIdle(canvas);
   return true;
 }
@@ -247,27 +281,4 @@ bool PaleoAnalysisRunner::importNgiiDemDownload(QgsProject* project, QgsMapCanva
   }
   if (errorOut) *errorOut = QStringLiteral("받은 압축 파일에서 DEM 래스터(.img/.tif/.dem/.txt)를 찾지 못했습니다.");
   return false;
-}
-
-bool PaleoAnalysisRunner::applyEvidenceToSheet(QgsProject* project,
-                                               const hgis::paleo::PaleoAnalysisResult& res) {
-  if (!project || !project->layoutManager()) return false;
-  auto* ly = dynamic_cast<QgsPrintLayout*>(project->layoutManager()->layoutByName(QStringLiteral("user_sheet")));
-  if (!ly) return false;
-  auto* label = dynamic_cast<QgsLayoutItemLabel*>(ly->itemById(QStringLiteral("ka_paleo_evidence_box")));
-  if (!label) {
-    label = new QgsLayoutItemLabel(ly);
-    label->setId(QStringLiteral("ka_paleo_evidence_box"));
-    ly->addLayoutItem(label);
-    label->attemptMove(QgsLayoutPoint(12.0, 210.0, Qgis::LayoutUnit::Millimeters));
-    label->attemptResize(QgsLayoutSize(185.0, 48.0, Qgis::LayoutUnit::Millimeters));
-  }
-  label->setText(QString::fromUtf8(res.aoi_summary_text.c_str()));
-  label->setBackgroundEnabled(true);
-  label->setBackgroundColor(QColor(255, 255, 255, 235));
-  label->setFrameEnabled(true);
-  QgsTextFormat tf;
-  tf.setFont(QFont(QStringLiteral("Malgun Gothic"), 7)); tf.setSize(7.2); tf.setColor(QColor(20, 24, 31));
-  label->setTextFormat(tf); label->setMarginX(2.0); label->setMarginY(2.0);
-  return true;
 }

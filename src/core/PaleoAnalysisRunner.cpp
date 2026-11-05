@@ -56,15 +56,9 @@ void addMarkerVectorLayer(QgsProject* project, const QString& gpkgPath,
   });
   mem.updateFields();
 
-  const QgsCoordinateReferenceSystem crs5186(QStringLiteral("EPSG:5186"));
-  const QgsCoordinateTransform toWork(crs5186, workCrs, project->transformContext());
-  const bool needTr = workCrs.isValid() && workCrs != crs5186;
   QgsFeatureList feats;
   for (const auto& bh : boreholes) {
-    QgsPointXY pt(bh.x, bh.y);
-    if (needTr && bh.x >= 320000.0) {
-      try { pt = toWork.transform(pt); } catch (...) { KA_LOG_EXCEPT(); }
-    }
+    const QgsPointXY pt(bh.x, bh.y);
     QgsFeature f(mem.fields());
     f.setGeometry(QgsGeometry::fromPointXY(pt));
     f.setAttribute(0, QString::fromUtf8(bh.hole_id.c_str()));

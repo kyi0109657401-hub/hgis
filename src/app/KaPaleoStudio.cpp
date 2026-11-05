@@ -3,8 +3,11 @@
 #include "KaLayerInformation.h"
 #include "KaMapPagePlate.h"
 #include "MainWindow.h"
+#include "core/GeoInfoBoreholeService.h"
+#include "core/GeologyMapService.h"
 #include "core/LayerOps.h"
 #include "core/PaleoAnalysisRunner.h"
+#include "core/PaleoLandformService.h"
 
 #include <QAbstractItemView>
 #include <QApplication>
@@ -90,6 +93,8 @@ void KaPaleoStudio::buildUi() {
     });
     layerLay->addWidget(m_layerTree, 1);
     layerLay->addWidget(new KaLayerInformationPanel(m_layerModel, m_layerTree, layerBox));
+    connect(m_project, &QgsProject::layersAdded, this, &KaPaleoStudio::refreshSourceStatus);
+    connect(m_project, &QgsProject::layersRemoved, this, &KaPaleoStudio::refreshSourceStatus);
   }
   mainSplit->addWidget(layerBox);
 
@@ -100,7 +105,7 @@ void KaPaleoStudio::buildUi() {
   auto* mapLay = new QVBoxLayout(mapFrame);
   mapLay->setContentsMargins(8, 8, 8, 8);
   m_mapPreview = new QLabel(
-      QStringLiteral("우측 「반경 10km 5대 자료 수집 · 고지형 분석 실행」을 누르면\n"
+      QStringLiteral("우측 「준비된 자료로 고지형 분석 실행」을 누르면\n"
                      "국토지리원 DEM·음영기복 위에 7대 고지형 분류도와 시추공 마커가 표시됩니다."),
       mapFrame);
   m_mapPreview->setAlignment(Qt::AlignCenter);
@@ -130,8 +135,22 @@ void KaPaleoStudio::buildUi() {
   rCap->setObjectName(QStringLiteral("cardCaption"));
   rightLay->addWidget(rCap);
 
+  m_sourcesStatusLabel = new QLabel(rightHost);
+  m_sourcesStatusLabel->setObjectName(QStringLiteral("paleoSourcesStatus"));
+  m_sourcesStatusLabel->setWordWrap(true);
+  rightLay->addWidget(m_sourcesStatusLabel);
+
+  auto* dlRow = new QHBoxLayout();
+  auto* btnDlSources = new QPushButton(QStringLiteral("시추·KIGAM 내려받기…"), rightHost);
+  connect(btnDlSources, &QPushButton::clicked, this, &KaPaleoStudio::requestOpenSourceDialog);
+  dlRow->addWidget(btnDlSources);
+  auto* btnDlDem = new QPushButton(QStringLiteral("국토지리원 DEM 받기…"), rightHost);
+  connect(btnDlDem, &QPushButton::clicked, this, &KaPaleoStudio::requestDemDownload);
+  dlRow->addWidget(btnDlDem);
+  rightLay->addLayout(dlRow);
+
   auto* btnRun =
-      new QPushButton(QStringLiteral("반경 10km 5대 자료 수집 · 고지형 분석 실행"), rightHost);
+      new QPushButton(QStringLiteral("준비된 자료로 고지형 분석 실행"), rightHost);
   btnRun->setObjectName(QStringLiteral("btnPrimary"));
   connect(btnRun, &QPushButton::clicked, this, &KaPaleoStudio::runAnalysis);
   rightLay->addWidget(btnRun);
@@ -144,7 +163,7 @@ void KaPaleoStudio::buildUi() {
   rightLay->addWidget(btnSheet);
 
   m_statusLabel = new QLabel(
-      QStringLiteral("조사구역 반경 10km 기준 5대 원본 자료와 파생 레이어를 레이어창에 자동 등록합니다."),
+      QStringLiteral("6대 입력 자료 구비 현황을 확인한 뒤 분석을 실행하세요."),
       rightHost);
   m_statusLabel->setWordWrap(true);
   rightLay->addWidget(m_statusLabel);
@@ -204,20 +223,46 @@ void KaPaleoStudio::handleDeleteKey() {
   }
 }
 
+void KaPaleoStudio::refreshSourceStatus() {
+  if (!m_sourcesStatusLabel || !m_project) return;
+  const bool hasDem = PaleoAnalysisRunner::findPreferredDem(m_project) != nullptr;
+  const bool hasSoil = PaleoLandformService::findSoilTerrainLayer(m_project) != nullptr;
+  const bool hasGeol = GeologyMapService::existingGeologyLayer(m_project) != nullptr;
+  bool hasRiver = false;
+  for (QgsMapLayer* l : m_project->mapLayers())
+    if (l && l->name().contains(QStringLiteral("수계"))) hasRiver = true;
+  const bool hasKigam = !m_project->mapLayersByName(QStringLiteral("고지형 수문·연대(KIGAM)")).isEmpty();
+  auto* bhLayer = GeoInfoBoreholeService::findBoreholeLayer(m_project);
+  const long long bhCount = bhLayer ? bhLayer->featureCount() : 0;
+  auto badge = [](bool ok, const QString& name) {
+    return QStringLiteral("<span style='color:%1;'>%2 %3</span>")
+        .arg(ok ? QStringLiteral("#15803d") : QStringLiteral("#b91c1c"),
+             ok ? QStringLiteral("●") : QStringLiteral("○"), name);
+  };
+  m_sourcesStatusLabel->setText(
+      QStringLiteral("<b>6대 입력 자료 현황</b>: %1 · %2 · %3<br>%4 · %5 · %6")
+          .arg(badge(hasDem, QStringLiteral("국토지리원DEM")),
+               badge(hasSoil, QStringLiteral("토양도")),
+               badge(hasGeol, QStringLiteral("지질도")),
+               badge(hasRiver, QStringLiteral("수계도")),
+               badge(hasKigam, QStringLiteral("KIGAM수문")),
+               badge(bhCount > 0, QStringLiteral("시추(%1공)").arg(bhCount))));
+}
+
 void KaPaleoStudio::runAnalysis() {
   if (!m_project) return;
   if (m_statusLabel)
-    m_statusLabel->setText(
-        QStringLiteral("조사구역 반경 10km 5대 자료 수집 및 고지형 4단계 파이프라인 연산 중…"));
+    m_statusLabel->setText(QStringLiteral("고지형 4단계 파이프라인 연산 중…"));
   QApplication::processEvents();
   m_lastResult = PaleoAnalysisRunner::runFullPipeline(m_project, m_mainCanvas, m_surveyPath, nullptr);
+  refreshSourceStatus();
   if (m_crossSection) m_crossSection->setResult(m_lastResult);
   if (m_summaryBox)
     m_summaryBox->setPlainText(QString::fromUtf8(m_lastResult.aoi_summary_text.c_str()));
   renderMapPreview();
   if (m_statusLabel)
     m_statusLabel->setText(
-        QStringLiteral("반경 10km 고지형 분석 완료 — 모든 원본·파생 레이어가 좌측 레이어창에 등록되었습니다."));
+        QStringLiteral("고지형 분석 완료 — 파생 레이어가 좌측 레이어창에 등록되었습니다."));
 }
 
 void KaPaleoStudio::renderMapPreview() {

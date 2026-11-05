@@ -187,11 +187,7 @@ PaleoDemClassifier::Metrics PaleoDemClassifier::samplePolygonMetrics(
       while (it.nextFeature(bf)) {
         if (!bf.hasGeometry()) continue;
         QgsGeometry bg = bf.geometry();
-        const QgsPointXY rawPt = bg.asPoint();
-        if (needTr && !(workCrs.authid() == QLatin1String("EPSG:5187") &&
-                        bh->crs().authid() == QLatin1String("EPSG:5186") && rawPt.x() < 300000.0)) {
-          if (bg.transform(tr) != Qgis::GeometryOperationResult::Success) continue;
-        }
+        if (needTr && bg.transform(tr) != Qgis::GeometryOperationResult::Success) continue;
         const double d = geomWorkCrs.distance(bg);
         if (std::isfinite(d) && d <= bestDist) {
           bestDist = d;
