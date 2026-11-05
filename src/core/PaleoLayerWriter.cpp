@@ -10,7 +10,8 @@
 #include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
-#include <QFont>
+#include <QList>
+#include <QPair>
 #include <QRegularExpression>
 #include <QTextStream>
 #include <algorithm>
@@ -19,30 +20,54 @@
 #include <cpl_conv.h>
 #include <gdal_priv.h>
 #include <gdal_utils.h>
+#include <qgsbilinearrasterresampler.h>
+#include <qgscolorrampshader.h>
 #include <qgscoordinatereferencesystem.h>
+#include <qgslayertreelayer.h>
+#include <qgslayertreemodellegendnode.h>
 #include <qgsmapcanvas.h>
+#include <qgsmaplayerlegend.h>
 #include <qgsproject.h>
 #include <qgsrasterlayer.h>
+#include <qgsrasterresamplefilter.h>
+#include <qgsrastershader.h>
+#include <qgssinglebandpseudocolorrenderer.h>
 
 namespace {
-struct Stop { double z; uint8_t r, g, b; };
-constexpr std::array<Stop, 10> kHypsoStops = {{{0.0, 114, 198, 181}, {25.0, 145, 211, 150},
-    {50.0, 165, 214, 128}, {100.0, 208, 220, 120}, {200.0, 235, 210, 122}, {400.0, 232, 166, 102},
-    {600.0, 217, 139, 90}, {900.0, 185, 108, 82}, {1300.0, 182, 152, 134}, {2000.0, 244, 243, 239}}};
+struct Stop { double t; uint8_t r, g, b; };
+constexpr std::array<Stop, 7> kImhofStops = {{
+    {0.00, 118, 198, 174}, {0.15, 156, 216, 146}, {0.32, 208, 226, 132},
+    {0.50, 242, 214, 128}, {0.68, 234, 174, 110}, {0.85, 206, 138, 96},
+    {1.00, 244, 239, 233},
+}};
 
-void hypsoColor(double z, uint8_t& r, uint8_t& g, uint8_t& b) noexcept {
-  if (z <= kHypsoStops.front().z) { r = kHypsoStops.front().r; g = kHypsoStops.front().g; b = kHypsoStops.front().b; return; }
-  for (size_t i = 1; i < kHypsoStops.size(); ++i) {
-    if (z <= kHypsoStops[i].z) {
-      const double t = (z - kHypsoStops[i - 1].z) / std::max(1.0, kHypsoStops[i].z - kHypsoStops[i - 1].z);
-      r = static_cast<uint8_t>(std::lround(kHypsoStops[i - 1].r + t * (kHypsoStops[i].r - kHypsoStops[i - 1].r)));
-      g = static_cast<uint8_t>(std::lround(kHypsoStops[i - 1].g + t * (kHypsoStops[i].g - kHypsoStops[i - 1].g)));
-      b = static_cast<uint8_t>(std::lround(kHypsoStops[i - 1].b + t * (kHypsoStops[i].b - kHypsoStops[i - 1].b)));
+void imhofColor(double normT, uint8_t& r, uint8_t& g, uint8_t& b) noexcept {
+  const double u = std::clamp(normT, 0.0, 1.0);
+  for (size_t i = 1; i < kImhofStops.size(); ++i) {
+    if (u <= kImhofStops[i].t) {
+      const double f = (u - kImhofStops[i - 1].t) / std::max(1e-6, kImhofStops[i].t - kImhofStops[i - 1].t);
+      r = static_cast<uint8_t>(std::lround(kImhofStops[i - 1].r + f * (kImhofStops[i].r - kImhofStops[i - 1].r)));
+      g = static_cast<uint8_t>(std::lround(kImhofStops[i - 1].g + f * (kImhofStops[i].g - kImhofStops[i - 1].g)));
+      b = static_cast<uint8_t>(std::lround(kImhofStops[i - 1].b + f * (kImhofStops[i].b - kImhofStops[i - 1].b)));
       return;
     }
   }
-  r = kHypsoStops.back().r; g = kHypsoStops.back().g; b = kHypsoStops.back().b;
+  r = kImhofStops.back().r; g = kImhofStops.back().g; b = kImhofStops.back().b;
 }
+
+class SwatchListLegend final : public QgsMapLayerLegend {
+public:
+  SwatchListLegend(QList<QPair<QColor, QString>> items, QObject* parent = nullptr)
+      : QgsMapLayerLegend(parent), m_items(std::move(items)) {}
+  QList<QgsLayerTreeModelLegendNode*> createLayerTreeModelLegendNodes(QgsLayerTreeLayer* node) override {
+    QList<QgsLayerTreeModelLegendNode*> out;
+    if (!node) return out;
+    for (const auto& it : m_items) out.append(new QgsRasterSymbolLegendNode(node, it.first, it.second));
+    return out;
+  }
+private:
+  QList<QPair<QColor, QString>> m_items;
+};
 
 QString safeOut(const QString& p) {
   if (!QFileInfo::exists(p) || QFile::remove(p)) return p;
@@ -60,67 +85,13 @@ QgsRasterLayer* addOrReplaceNamedRaster(QgsProject* project, const QString& path
   QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
   auto* rl = new QgsRasterLayer(path, title, QStringLiteral("gdal"));
   if (!rl->isValid()) { delete rl; return nullptr; }
+  if (auto* rf = rl->resampleFilter()) rf->setZoomedInResampler(new QgsBilinearRasterResampler());
   LayerOps::markReferenceLayer(rl); LayerOps::applyLegendCrsLabel(rl);
   if (!project->addMapLayer(rl, true)) { delete rl; return nullptr; }
   LayerOps::placeInLegendGroup(project, rl, QStringLiteral("참조 지도"));
   return rl;
 }
 }  // namespace
-
-bool PaleoAnalysisRunner::writeRgbaGeoTiff(const QString& outPath, const hgis::paleo::GridTransform& tf,
-                                           const QString& crsWkt, const std::vector<uint8_t>& rgba, QString* errorOut) {
-  if (tf.width <= 0 || tf.height <= 0 || rgba.size() < static_cast<size_t>(tf.width) * tf.height * 4) {
-    if (errorOut) *errorOut = QStringLiteral("RGBA 격자 크기가 올바르지 않습니다.");
-    return false;
-  }
-  GDALAllRegister(); CPLSetConfigOption("GDAL_FILENAME_IS_UTF8", "YES");
-  QDir().mkpath(QFileInfo(outPath).absolutePath());
-  GDALDriver* drv = GetGDALDriverManager()->GetDriverByName("GTiff");
-  if (!drv) return false;
-  const char* opts[] = {"COMPRESS=DEFLATE", "TILED=YES", nullptr};
-  GDALDataset* ds = drv->Create(outPath.toUtf8().constData(), tf.width, tf.height, 4, GDT_Byte, const_cast<char**>(opts));
-  if (!ds) return false;
-  double gt[6] = {tf.origin_x, tf.cell_size, 0.0, tf.origin_y, 0.0, -tf.cell_size};
-  ds->SetGeoTransform(gt);
-  if (!crsWkt.isEmpty()) ds->SetProjection(crsWkt.toUtf8().constData());
-  const size_t n = static_cast<size_t>(tf.width) * tf.height;
-  std::vector<uint8_t> bandBuf(n);
-  const GDALColorInterp interps[4] = {GCI_RedBand, GCI_GreenBand, GCI_BlueBand, GCI_AlphaBand};
-  for (int b = 0; b < 4; ++b) {
-    for (size_t i = 0; i < n; ++i) bandBuf[i] = rgba[i * 4 + b];
-    GDALRasterBand* band = ds->GetRasterBand(b + 1);
-    band->SetColorInterpretation(interps[b]);
-    band->RasterIO(GF_Write, 0, 0, tf.width, tf.height, bandBuf.data(), tf.width, tf.height, GDT_Byte, 0, 0);
-  }
-  GDALClose(ds);
-  return true;
-}
-
-bool PaleoAnalysisRunner::writeFloatGeoTiff(const QString& outPath, const hgis::paleo::GridTransform& tf,
-                                            const QString& crsWkt, const std::vector<double>& values, QString* errorOut) {
-  if (tf.width <= 0 || tf.height <= 0 || values.size() < static_cast<size_t>(tf.width) * tf.height) {
-    if (errorOut) *errorOut = QStringLiteral("실수 격자 크기가 올바르지 않습니다.");
-    return false;
-  }
-  GDALAllRegister(); CPLSetConfigOption("GDAL_FILENAME_IS_UTF8", "YES");
-  QDir().mkpath(QFileInfo(outPath).absolutePath());
-  GDALDriver* drv = GetGDALDriverManager()->GetDriverByName("GTiff");
-  if (!drv) return false;
-  const char* opts[] = {"COMPRESS=DEFLATE", "TILED=YES", nullptr};
-  GDALDataset* ds = drv->Create(outPath.toUtf8().constData(), tf.width, tf.height, 1, GDT_Float32, const_cast<char**>(opts));
-  if (!ds) return false;
-  double gt[6] = {tf.origin_x, tf.cell_size, 0.0, tf.origin_y, 0.0, -tf.cell_size};
-  ds->SetGeoTransform(gt);
-  if (!crsWkt.isEmpty()) ds->SetProjection(crsWkt.toUtf8().constData());
-  const size_t n = static_cast<size_t>(tf.width) * tf.height;
-  std::vector<float> buf(n);
-  for (size_t i = 0; i < n; ++i) buf[i] = static_cast<float>(values[i]);
-  GDALRasterBand* band = ds->GetRasterBand(1);
-  band->SetNoDataValue(-9999.0);
-  band->RasterIO(GF_Write, 0, 0, tf.width, tf.height, buf.data(), tf.width, tf.height, GDT_Float32, 0, 0);
-  GDALClose(ds);
-  return true;
-}
 
 bool PaleoAnalysisRunner::registerDemWideLayers(QgsProject* project, QgsMapCanvas* canvas,
                                                 const QString& sourceDemPath,
@@ -199,22 +170,34 @@ bool PaleoAnalysisRunner::registerDemWideLayers(QgsProject* project, QgsMapCanva
   ds->GetRasterBand(1)->RasterIO(GF_Read, 0, 0, ds->GetRasterXSize(), ds->GetRasterYSize(),
                                  rawZ.data(), w, h, GDT_Float32, 0, 0);
   GDALClose(ds);
-  std::vector<double> z(rawZ.size());
+  std::vector<double> z(rawZ.size()), sortedZ;
+  sortedZ.reserve(rawZ.size());
   double validZ = 20.0;
   for (size_t i = 0; i < rawZ.size(); ++i) {
     if (std::isfinite(rawZ[i]) && rawZ[i] > -500.0f) validZ = rawZ[i];
     z[i] = validZ;
+    sortedZ.push_back(validZ);
   }
+  std::sort(sortedZ.begin(), sortedZ.end());
+  const double zLow = sortedZ.empty() ? 0.0 : sortedZ[sortedZ.size() * 2 / 100];
+  const double zHigh = std::max(zLow + 20.0, sortedZ.empty() ? 200.0 : sortedZ[sortedZ.size() * 98 / 100]);
   std::vector<double> slopeDeg, hillshade, twi;
   hgis::paleo::HgisPaleoEngine::compute_terrain_derivatives(tf, z, slopeDeg, hillshade, twi);
+  const std::vector<double> tpi50 = hgis::paleo::HgisPaleoEngine::compute_tpi_integral_image(tf, z, 50.0);
   std::vector<uint8_t> wideRgba(z.size() * 4, 255);
   for (size_t i = 0; i < z.size(); ++i) {
-    uint8_t r = 0, g = 0, b = 0; hypsoColor(z[i], r, g, b);
-    const double factor = std::clamp(hillshade[i] / 255.0, 0.25, 1.0) * std::clamp(1.0 - (slopeDeg[i] / 90.0) * 0.35, 0.55, 1.0);
-    wideRgba[i * 4 + 0] = static_cast<uint8_t>(std::clamp(std::lround(r * factor), 0L, 255L));
-    wideRgba[i * 4 + 1] = static_cast<uint8_t>(std::clamp(std::lround(g * factor), 0L, 255L));
-    wideRgba[i * 4 + 2] = static_cast<uint8_t>(std::clamp(std::lround(b * factor), 0L, 255L));
-    wideRgba[i * 4 + 3] = 230;
+    uint8_t r = 0, g = 0, b = 0;
+    imhofColor((z[i] - zLow) / (zHigh - zLow), r, g, b);
+    const double hs = (hillshade[i] - 128.0) / 127.0;
+    const double ao = std::clamp(tpi50[i] / 5.0, -0.18, 0.15) * 26.0;
+    const double slp = std::clamp(slopeDeg[i] / 42.0, 0.0, 1.0) * 16.0;
+    const double dr = (hs >= 0.0 ? 28.0 * hs : 38.0 * hs) + ao - slp;
+    const double dg = (hs >= 0.0 ? 22.0 * hs : 34.0 * hs) + ao - slp;
+    const double db = (hs >= 0.0 ? 8.0 * hs : 20.0 * hs) + ao * 0.7 - slp * 0.6;
+    wideRgba[i * 4 + 0] = static_cast<uint8_t>(std::clamp(std::lround(r + dr), 0L, 255L));
+    wideRgba[i * 4 + 1] = static_cast<uint8_t>(std::clamp(std::lround(g + dg), 0L, 255L));
+    wideRgba[i * 4 + 2] = static_cast<uint8_t>(std::clamp(std::lround(b + db), 0L, 255L));
+    wideRgba[i * 4 + 3] = 236;
   }
   writeRgbaGeoTiff(targetWide, tf, wkt, wideRgba, errorOut);
   writeFloatGeoTiff(targetSlope, tf, wkt, slopeDeg, errorOut);
@@ -225,8 +208,31 @@ bool PaleoAnalysisRunner::registerDemWideLayers(QgsProject* project, QgsMapCanva
     ReferenceKind::tag(demLayer, QString::fromLatin1(ReferenceKind::kDem));
     DemPresentation::apply(demLayer, QStringLiteral("viewport"), demLayer->extent());
   }
-  addOrReplaceNamedRaster(project, targetSlope, QStringLiteral("[DEM] 경사도"));
-  addOrReplaceNamedRaster(project, targetWide, QStringLiteral("[DEM] 광역지형도(채색+음영기복)"));
+  if (auto* slpLayer = addOrReplaceNamedRaster(project, targetSlope, QStringLiteral("[DEM] 경사도"))) {
+    auto* fcn = new QgsColorRampShader(0.0, 45.0);
+    fcn->setColorRampType(Qgis::ShaderInterpolationMethod::Discrete);
+    fcn->setColorRampItemList({
+        QgsColorRampShader::ColorRampItem(2.0, QColor(46, 184, 114), QStringLiteral("0~2° 평탄지 (충적·단구면)")),
+        QgsColorRampShader::ColorRampItem(5.0, QColor(148, 216, 88), QStringLiteral("2~5° 완경사 (유적 입지 유망)")),
+        QgsColorRampShader::ColorRampItem(12.0, QColor(245, 212, 66), QStringLiteral("5~12° 사면 (구릉·선상지)")),
+        QgsColorRampShader::ColorRampItem(20.0, QColor(242, 132, 44), QStringLiteral("12~20° 급사면 (성곽·고분)")),
+        QgsColorRampShader::ColorRampItem(90.0, QColor(192, 57, 43), QStringLiteral("20°+ 산지 급경사")),
+    });
+    auto* sh = new QgsRasterShader();
+    sh->setRasterShaderFunction(fcn);
+    slpLayer->setRenderer(new QgsSingleBandPseudoColorRenderer(slpLayer->dataProvider(), 1, sh));
+    slpLayer->setOpacity(0.84);
+  }
+  if (auto* wideLayer = addOrReplaceNamedRaster(project, targetWide, QStringLiteral("[DEM] 광역지형도(채색+음영기복)"))) {
+    const auto zAt = [&](double f) { return qRound(zLow + (zHigh - zLow) * f); };
+    wideLayer->setLegend(new SwatchListLegend({
+        {QColor(118, 198, 174), QStringLiteral("저지·충적면 (%1~%2m)").arg(zAt(0.0)).arg(zAt(0.2))},
+        {QColor(156, 216, 146), QStringLiteral("완경사·저위단구 (%1~%2m)").arg(zAt(0.2)).arg(zAt(0.4))},
+        {QColor(242, 214, 128), QStringLiteral("구릉·중위단구 (%1~%2m)").arg(zAt(0.4)).arg(zAt(0.65))},
+        {QColor(234, 174, 110), QStringLiteral("산록·사면 (%1~%2m)").arg(zAt(0.65)).arg(zAt(0.85))},
+        {QColor(206, 138, 96), QStringLiteral("산지·능선 (%1~%2m+)").arg(zAt(0.85)).arg(zAt(1.0))},
+    }, wideLayer));
+  }
   if (canvas) LayerOps::refreshCanvasIfIdle(canvas);
   return true;
 }

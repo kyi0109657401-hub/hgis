@@ -141,7 +141,7 @@ void KaPaleoStudio::buildUi() {
   rightLay->addWidget(m_sourcesStatusLabel);
 
   auto* dlRow = new QHBoxLayout();
-  auto* btnDlSources = new QPushButton(QStringLiteral("시추·KIGAM 내려받기…"), rightHost);
+  auto* btnDlSources = new QPushButton(QStringLiteral("수치지질·시추·KIGAM 별도 받기…"), rightHost);
   connect(btnDlSources, &QPushButton::clicked, this, &KaPaleoStudio::requestOpenSourceDialog);
   dlRow->addWidget(btnDlSources);
   auto* btnDlDem = new QPushButton(QStringLiteral("국토지리원 DEM 받기…"), rightHost);

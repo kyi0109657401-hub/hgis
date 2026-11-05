@@ -1,26 +1,34 @@
 #include "GeoInfoBoreholeService.h"
+#include "HgisPaleoEngine.h"
 #include "KaLogExcept.h"
 #include "LayerOps.h"
+#include "PaleoAnalysisRunner.h"
 #include "ReferenceStorage.h"
 
 #include <QColor>
+#include <QDir>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMap>
 #include <QNetworkRequest>
 #include <QSet>
 #include <QUrl>
 #include <QUrlQuery>
 #include <algorithm>
+#include <cmath>
 
+#include <qgsbilinearrasterresampler.h>
 #include <qgsblockingnetworkrequest.h>
 #include <qgscategorizedsymbolrenderer.h>
+#include <qgscolorrampshader.h>
 #include <qgscoordinatereferencesystem.h>
 #include <qgscoordinatetransform.h>
 #include <qgscoordinatetransformcontext.h>
 #include <qgsexception.h>
 #include <qgsfeature.h>
+#include <qgsfeatureiterator.h>
 #include <qgsfeedback.h>
 #include <qgsfield.h>
 #include <qgsfields.h>
@@ -30,7 +38,11 @@
 #include <qgspallabeling.h>
 #include <qgspointxy.h>
 #include <qgsproject.h>
+#include <qgsrasterlayer.h>
+#include <qgsrasterresamplefilter.h>
+#include <qgsrastershader.h>
 #include <qgsrectangle.h>
+#include <qgssinglebandpseudocolorrenderer.h>
 #include <qgstextformat.h>
 #include <qgsvectorfilewriter.h>
 #include <qgsvectorlayer.h>
@@ -40,12 +52,7 @@ namespace {
 
 constexpr const char* kLayerTitle = "시추주상도(국토지반정보)";
 constexpr const char* kCustomTag = "ka_hgis/geoinfo_borehole";
-
-struct HoleCandidate {
-  QString code;
-  QgsPointXY pt5186;
-  bool hasPt5186 = false;
-};
+using HoleCandidate = GeoInfoBoreholeService::HoleCandidate;
 
 QList<HoleCandidate> fetchHoleCandidatesInExtent(
     const QgsRectangle& extent5186, const QgsCoordinateTransformContext& transformContext,
@@ -69,16 +76,14 @@ QList<HoleCandidate> fetchHoleCandidatesInExtent(
     q.addQueryItem(QStringLiteral("CRS"), QStringLiteral("EPSG:3857"));
     q.addQueryItem(QStringLiteral("BBOX"),
                    QStringLiteral("%1,%2,%3,%4")
-                       .arg(b.xMinimum(), 0, 'f', 2)
-                       .arg(b.yMinimum(), 0, 'f', 2)
-                       .arg(b.xMaximum(), 0, 'f', 2)
-                       .arg(b.yMaximum(), 0, 'f', 2));
+                       .arg(b.xMinimum(), 0, 'f', 2).arg(b.yMinimum(), 0, 'f', 2)
+                       .arg(b.xMaximum(), 0, 'f', 2).arg(b.yMaximum(), 0, 'f', 2));
     q.addQueryItem(QStringLiteral("WIDTH"), QStringLiteral("2"));
     q.addQueryItem(QStringLiteral("HEIGHT"), QStringLiteral("2"));
     q.addQueryItem(QStringLiteral("I"), QStringLiteral("1"));
     q.addQueryItem(QStringLiteral("J"), QStringLiteral("1"));
     q.addQueryItem(QStringLiteral("INFO_FORMAT"), QStringLiteral("application/json"));
-    q.addQueryItem(QStringLiteral("FEATURE_COUNT"), QStringLiteral("150"));
+    q.addQueryItem(QStringLiteral("FEATURE_COUNT"), QStringLiteral("400"));
     url.setQuery(q);
 
     QNetworkRequest req(url);
@@ -104,21 +109,16 @@ QList<HoleCandidate> fetchHoleCandidatesInExtent(
             KA_LOG_EXCEPT();
           }
         }
-        if (!code.isEmpty() && !seen.contains(code) &&
-            (x <= 0.0 || extent5186.contains(pt5186))) {
+        if (!code.isEmpty() && !seen.contains(code) && (x <= 0.0 || extent5186.contains(pt5186))) {
           seen.insert(code);
           out.append({code, pt5186, hasPt});
         }
       }
-      const QgsPointXY center = extent5186.center();
-      std::sort(out.begin(), out.end(), [&center](const HoleCandidate& a, const HoleCandidate& b) {
-        return a.pt5186.sqrDist(center) < b.pt5186.sqrDist(center);
-      });
     }
   } catch (...) {
     KA_LOG_EXCEPT();
   }
-  return out;
+  return GeoInfoBoreholeService::selectSpatiallyBalancedCandidates(out, extent5186.center(), 120, 150.0);
 }
 
 }  // namespace
@@ -132,25 +132,25 @@ PreparedReferenceMap GeoInfoBoreholeService::prepare(
   const QList<HoleCandidate> candidates =
       fetchHoleCandidatesInExtent(extent5186, transformContext, feedback);
   if (candidates.isEmpty()) {
-    result.error = QStringLiteral("현재 화면 범위 안에 등록된 국토지반정보 시추공이 없습니다.");
+    result.error = QStringLiteral("현재 범위 안에 등록된 국토지반정보 시추공이 없습니다.");
     return result;
   }
 
   QgsVectorLayer mem(QStringLiteral("Point?crs=EPSG:5186"), QString::fromUtf8(kLayerTitle),
                      QStringLiteral("memory"));
-  QgsFields fields;
-  fields.append(QgsField(QStringLiteral("hole_code"), QMetaType::Type::QString));
-  fields.append(QgsField(QStringLiteral("project_name"), QMetaType::Type::QString));
-  fields.append(QgsField(QStringLiteral("altitude_m"), QMetaType::Type::Double));
-  fields.append(QgsField(QStringLiteral("fill_m"), QMetaType::Type::Double));
-  fields.append(QgsField(QStringLiteral("alluvial_m"), QMetaType::Type::Double));
-  fields.append(QgsField(QStringLiteral("weathered_m"), QMetaType::Type::Double));
-  fields.append(QgsField(QStringLiteral("water_m"), QMetaType::Type::Double));
-  fields.append(QgsField(QStringLiteral("uscs"), QMetaType::Type::QString));
-  fields.append(QgsField(QStringLiteral("deposit_env"), QMetaType::Type::QString));
-  fields.append(QgsField(QStringLiteral("paleo_hint"), QMetaType::Type::QString));
-  fields.append(QgsField(QStringLiteral("layer_summary"), QMetaType::Type::QString));
-  mem.dataProvider()->addAttributes(fields.toList());
+  mem.dataProvider()->addAttributes({
+      QgsField(QStringLiteral("hole_code"), QMetaType::Type::QString),
+      QgsField(QStringLiteral("project_name"), QMetaType::Type::QString),
+      QgsField(QStringLiteral("altitude_m"), QMetaType::Type::Double),
+      QgsField(QStringLiteral("fill_m"), QMetaType::Type::Double),
+      QgsField(QStringLiteral("alluvial_m"), QMetaType::Type::Double),
+      QgsField(QStringLiteral("weathered_m"), QMetaType::Type::Double),
+      QgsField(QStringLiteral("water_m"), QMetaType::Type::Double),
+      QgsField(QStringLiteral("uscs"), QMetaType::Type::QString),
+      QgsField(QStringLiteral("deposit_env"), QMetaType::Type::QString),
+      QgsField(QStringLiteral("paleo_hint"), QMetaType::Type::QString),
+      QgsField(QStringLiteral("layer_summary"), QMetaType::Type::QString),
+  });
   mem.updateFields();
 
   QgsFeatureList feats;
@@ -172,24 +172,14 @@ PreparedReferenceMap GeoInfoBoreholeService::prepare(
     BoreholeRecord rec;
     if (!parseSichudanJson(net.reply().content(), &rec)) continue;
     QgsPointXY pt5186(rec.tmX, rec.tmY);
-    if (candidates[i].hasPt5186) {
-      pt5186 = candidates[i].pt5186;
-    } else if (rec.tmX <= 0.0 || rec.tmY <= 0.0) {
-      continue;
-    }
+    if (candidates[i].hasPt5186) pt5186 = candidates[i].pt5186;
+    else if (rec.tmX <= 0.0 || rec.tmY <= 0.0) continue;
     QgsFeature f(mem.fields());
     f.setGeometry(QgsGeometry::fromPointXY(pt5186));
-    f.setAttribute(QStringLiteral("hole_code"), rec.holeCode);
-    f.setAttribute(QStringLiteral("project_name"), rec.projectName);
-    f.setAttribute(QStringLiteral("altitude_m"), rec.altitudeM);
-    f.setAttribute(QStringLiteral("fill_m"), rec.fillDepthM);
-    f.setAttribute(QStringLiteral("alluvial_m"), rec.alluvialThicknessM);
-    f.setAttribute(QStringLiteral("weathered_m"), rec.weatheredDepthM);
-    f.setAttribute(QStringLiteral("water_m"), rec.waterLevelM);
-    f.setAttribute(QStringLiteral("uscs"), rec.dominantUscs);
-    f.setAttribute(QStringLiteral("deposit_env"), rec.depositEnv);
-    f.setAttribute(QStringLiteral("paleo_hint"), rec.paleoHint);
-    f.setAttribute(QStringLiteral("layer_summary"), rec.layerSummary);
+    f.setAttributes(QgsAttributes({rec.holeCode, rec.projectName, rec.altitudeM, rec.fillDepthM,
+                                   rec.alluvialThicknessM, rec.weatheredDepthM, rec.waterLevelM,
+                                   rec.dominantUscs, rec.depositEnv, rec.paleoHint,
+                                   rec.layerSummary}));
     feats.append(f);
   }
   if (feats.isEmpty()) {
@@ -216,10 +206,7 @@ PreparedReferenceMap GeoInfoBoreholeService::prepare(
 
 bool GeoInfoBoreholeService::applyBoreholeStyle(QgsVectorLayer* layer) {
   if (!layer || !layer->isValid()) return false;
-  struct Cat {
-    const char* env;
-    const char* color;
-  };
+  struct Cat { const char* env; const char* color; };
   constexpr Cat kCats[] = {
       {"사질 충적(자연제방·미고지)", "#d97706"},
       {"점토·실트 충적(구하도·저습지)", "#2563eb"},
@@ -232,21 +219,24 @@ bool GeoInfoBoreholeService::applyBoreholeStyle(QgsVectorLayer* layer) {
         {QStringLiteral("name"), QStringLiteral("circle")},
         {QStringLiteral("color"), QString::fromLatin1(c.color)},
         {QStringLiteral("outline_color"), QStringLiteral("#1f2937")},
-        {QStringLiteral("outline_width"), QStringLiteral("0.4")},
-        {QStringLiteral("size"), QStringLiteral("3.4")},
+        {QStringLiteral("outline_width"), QStringLiteral("0.45")},
+        {QStringLiteral("size"), QStringLiteral("3.5")},
     });
     const QString label = QString::fromUtf8(c.env);
     cats.append(QgsRendererCategory(QVariant(label), sym.release(), label));
   }
   layer->setRenderer(new QgsCategorizedSymbolRenderer(QStringLiteral("deposit_env"), cats));
   QgsPalLayerSettings pal;
-  pal.fieldName = QStringLiteral("concat(\"hole_code\", ' (충적 ', round(\"alluvial_m\", 1), 'm)')");
+  pal.fieldName = QStringLiteral("concat(\"hole_code\", ' · 충적 ', round(\"alluvial_m\", 1), 'm')");
   pal.isExpression = true;
+  pal.placement = Qgis::LabelPlacement::AroundPoint;
+  pal.dist = 1.6;
+  pal.obstacleSettings().setIsObstacle(true);
   QgsTextFormat tf;
-  tf.setSize(8.5);
-  tf.setColor(QColor(30, 35, 42));
+  tf.setSize(8.2);
+  tf.setColor(QColor(24, 30, 38));
   tf.buffer().setEnabled(true);
-  tf.buffer().setSize(0.8);
+  tf.buffer().setSize(0.9);
   tf.buffer().setColor(Qt::white);
   pal.setFormat(tf);
   layer->setLabeling(new QgsVectorLayerSimpleLabeling(pal));
@@ -289,6 +279,7 @@ QgsVectorLayer* GeoInfoBoreholeService::addPrepared(QgsProject* project, QgsMapC
   }
   prepared.retainFiles();
   LayerOps::placeInLegendGroup(project, vl, QStringLiteral("참조 지도"));
+  registerAlluvialIsopachLayer(project, canvas, vl, prepared.gpkgPath);
   if (canvas) LayerOps::refreshCanvasIfIdle(canvas);
   return vl;
 }

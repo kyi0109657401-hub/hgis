@@ -1,11 +1,35 @@
 #include "GeoInfoBoreholeService.h"
+#include "HgisPaleoEngine.h"
+#include "KaLogExcept.h"
+#include "LayerOps.h"
+#include "PaleoAnalysisRunner.h"
 
+#include <QColor>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMap>
 #include <QStringList>
 #include <algorithm>
 #include <cmath>
+
+#include <qgsbilinearrasterresampler.h>
+#include <qgscolorrampshader.h>
+#include <qgscoordinatereferencesystem.h>
+#include <qgscoordinatetransform.h>
+#include <qgsfeature.h>
+#include <qgsfeatureiterator.h>
+#include <qgsgeometry.h>
+#include <qgsmapcanvas.h>
+#include <qgsproject.h>
+#include <qgsrasterlayer.h>
+#include <qgsrasterresamplefilter.h>
+#include <qgsrastershader.h>
+#include <qgssinglebandpseudocolorrenderer.h>
+#include <qgsvectorlayer.h>
 
 namespace {
 
@@ -126,4 +150,100 @@ bool GeoInfoBoreholeService::parseSichudanJson(const QByteArray& rawBytes, Boreh
     hints.append(QStringLiteral("지하수위 %1m").arg(out->waterLevelM, 0, 'f', 1));
   out->paleoHint = hints.join(QStringLiteral(" · "));
   return true;
+}
+
+QList<GeoInfoBoreholeService::HoleCandidate>
+GeoInfoBoreholeService::selectSpatiallyBalancedCandidates(
+    const QList<HoleCandidate>& rawCandidates, const QgsPointXY& center5186, int maxCount,
+    double cellMeters) {
+  if (rawCandidates.isEmpty() || maxCount <= 0) return {};
+  QList<HoleCandidate> sorted = rawCandidates;
+  std::sort(sorted.begin(), sorted.end(), [&center5186](const HoleCandidate& a, const HoleCandidate& b) {
+    return a.pt5186.sqrDist(center5186) < b.pt5186.sqrDist(center5186);
+  });
+  const double cell = std::max(25.0, cellMeters);
+  QList<QString> bucketOrder;
+  QMap<QString, QList<HoleCandidate>> buckets;
+  for (const HoleCandidate& c : sorted) {
+    const QString projPrefix = c.code.section(QLatin1String("BH"), 0, 0).trimmed();
+    const long long gx = static_cast<long long>(std::floor(c.pt5186.x() / cell));
+    const long long gy = static_cast<long long>(std::floor(c.pt5186.y() / cell));
+    const QString key = c.hasPt5186 ? QStringLiteral("%1:%2:%3").arg(projPrefix).arg(gx).arg(gy) : projPrefix;
+    if (!buckets.contains(key)) bucketOrder.append(key);
+    buckets[key].append(c);
+  }
+  QList<HoleCandidate> result;
+  for (int pass = 0; result.size() < maxCount; ++pass) {
+    bool addedAny = false;
+    for (const QString& key : bucketOrder) {
+      const auto& list = buckets[key];
+      if (pass < list.size()) {
+        result.append(list[pass]);
+        addedAny = true;
+        if (result.size() >= maxCount) break;
+      }
+    }
+    if (!addedAny) break;
+  }
+  return result;
+}
+
+QgsRasterLayer* GeoInfoBoreholeService::registerAlluvialIsopachLayer(
+    QgsProject* project, QgsMapCanvas* canvas, QgsVectorLayer* boreholeLayer,
+    const QString& surveyPath) {
+  if (!project || !boreholeLayer || !boreholeLayer->isValid()) return nullptr;
+  const QgsCoordinateReferenceSystem workCrs =
+      project->crs().isValid() ? project->crs() : QgsCoordinateReferenceSystem(QStringLiteral("EPSG:5187"));
+  const QgsCoordinateTransform toWork(boreholeLayer->crs(), workCrs, project->transformContext());
+  const bool needTr = boreholeLayer->crs().isValid() && boreholeLayer->crs() != workCrs;
+  std::vector<double> xs, ys, vals;
+  double minX = 1e18, maxX = -1e18, minY = 1e18, maxY = -1e18;
+  QgsFeature f;
+  QgsFeatureIterator it = boreholeLayer->getFeatures();
+  while (it.nextFeature(f)) {
+    if (!f.hasGeometry()) continue;
+    QgsPointXY pt = f.geometry().asPoint();
+    if (needTr) { try { pt = toWork.transform(pt); } catch (...) { KA_LOG_EXCEPT(); continue; } }
+    xs.push_back(pt.x()); ys.push_back(pt.y());
+    vals.push_back(std::max(0.0, f.attribute(QStringLiteral("alluvial_m")).toDouble()));
+    minX = std::min(minX, pt.x()); maxX = std::max(maxX, pt.x());
+    minY = std::min(minY, pt.y()); maxY = std::max(maxY, pt.y());
+  }
+  if (xs.size() < 2) return nullptr;
+  const double pad = std::max(300.0, std::max(maxX - minX, maxY - minY) * 0.25);
+  minX -= pad; maxX += pad; minY -= pad; maxY += pad;
+  constexpr int kGrid = 180;
+  const double cell = std::max(5.0, std::max(maxX - minX, maxY - minY) / kGrid);
+  const hgis::paleo::GridTransform tf{minX, maxY, cell, kGrid, kGrid};
+  const auto grid = hgis::paleo::HgisPaleoEngine::idw_interpolate_grid(tf, xs, ys, vals, 8, 2.0);
+  const QString outDir = surveyPath.isEmpty() ? QDir::temp().filePath(QStringLiteral("ka-hgis-paleo"))
+                                              : QFileInfo(surveyPath).absoluteDir().filePath(QStringLiteral("지형분석"));
+  QDir().mkpath(outDir);
+  const QString tifPath = QDir(outDir).filePath(QStringLiteral("시추_자연퇴적층_두께.tif"));
+  const QString title = QStringLiteral("[시추·지반] 자연 퇴적층 두께(m)");
+  for (QgsMapLayer* l : project->mapLayersByName(title)) if (l) project->removeMapLayer(l->id());
+  QFile::remove(tifPath);
+  if (!PaleoAnalysisRunner::writeFloatGeoTiff(tifPath, tf, workCrs.toWkt(), grid, nullptr)) return nullptr;
+  auto* rl = new QgsRasterLayer(tifPath, title, QStringLiteral("gdal"));
+  if (!rl->isValid()) { delete rl; return nullptr; }
+  auto* fcn = new QgsColorRampShader(0.0, 8.0);
+  fcn->setColorRampType(Qgis::ShaderInterpolationMethod::Linear);
+  fcn->setColorRampItemList({
+      QgsColorRampShader::ColorRampItem(0.5, QColor(254, 243, 199), QStringLiteral("0.5m 이하 (박층·기반암 직상)")),
+      QgsColorRampShader::ColorRampItem(1.5, QColor(253, 224, 71), QStringLiteral("1.5m (완경사 퇴적)")),
+      QgsColorRampShader::ColorRampItem(3.0, QColor(245, 158, 11), QStringLiteral("3.0m (중후층 충적·문화층 유망)")),
+      QgsColorRampShader::ColorRampItem(5.0, QColor(217, 119, 6), QStringLiteral("5.0m (후층 충적)")),
+      QgsColorRampShader::ColorRampItem(8.0, QColor(146, 64, 14), QStringLiteral("8.0m+ (심부 매몰곡·구하도)")),
+  });
+  auto* sh = new QgsRasterShader();
+  sh->setRasterShaderFunction(fcn);
+  rl->setRenderer(new QgsSingleBandPseudoColorRenderer(rl->dataProvider(), 1, sh));
+  rl->setOpacity(0.72);
+  if (auto* rf = rl->resampleFilter()) rf->setZoomedInResampler(new QgsBilinearRasterResampler());
+  LayerOps::markReferenceLayer(rl);
+  LayerOps::applyLegendCrsLabel(rl);
+  if (!project->addMapLayer(rl, true)) { delete rl; return nullptr; }
+  LayerOps::placeInLegendGroup(project, rl, QStringLiteral("참조 지도"));
+  if (canvas) LayerOps::refreshCanvasIfIdle(canvas);
+  return rl;
 }

@@ -92,10 +92,13 @@ void addMarkerVectorLayer(QgsProject* project, const QString& gpkgPath,
                            QStringLiteral("점토·실트 우세 (구하도·배후습지형)"))}));
   QgsPalLayerSettings pal;
   pal.fieldName = QStringLiteral("map_label");
+  pal.placement = Qgis::LabelPlacement::AroundPoint;
+  pal.dist = 1.5;
+  pal.obstacleSettings().setIsObstacle(true);
   QgsTextFormat tf;
   tf.setSize(8.0);
   tf.buffer().setEnabled(true);
-  tf.buffer().setSize(0.8);
+  tf.buffer().setSize(0.9);
   tf.buffer().setColor(Qt::white);
   pal.setFormat(tf);
   vl->setLabeling(new QgsVectorLayerSimpleLabeling(pal));

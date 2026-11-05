@@ -6,6 +6,7 @@
 #include "KaUserError.h"
 #include "MainWindow.h"
 #include "core/GeoInfoBoreholeService.h"
+#include "core/GeologyMapService.h"
 #include "core/KaLogExcept.h"
 #include "core/KigamPaleoService.h"
 #include "core/LayerOps.h"
@@ -104,10 +105,10 @@ QgsRectangle surveyRadius5186(QgsProject* proj, QgsMapCanvas* canvas, double rad
 
 void openPaleoSourceDialog(
     QWidget* mw, const QString& surveyPath,
-    const std::function<void(double, bool, bool)>& triggerDl) {
+    const std::function<void(double, bool, bool, bool)>& triggerDl) {
   if (!mw) return;
   if (surveyPath.isEmpty()) {
-    QMessageBox::information(mw, QStringLiteral("고지형 자료 내려받기"),
+    QMessageBox::information(mw, QStringLiteral("지질·시추·고지형 자료 내려받기"),
                              QStringLiteral("먼저 「새 조사」로 저장 위치를 만드세요."));
     return;
   }
@@ -115,8 +116,8 @@ void openPaleoSourceDialog(
   dlg->setObjectName(QStringLiteral("kaPaleoSourceDialog"));
   dlg->setAttribute(Qt::WA_DeleteOnClose);
   dlg->setWindowModality(Qt::NonModal);
-  dlg->setWindowTitle(QStringLiteral("시추주상도(국토지반정보) · KIGAM 고지형 자료 내려받기"));
-  dlg->resize(460, 240);
+  dlg->setWindowTitle(QStringLiteral("수치지질도 · 시추주상도(지반) · KIGAM 별도 내려받기 (도면 범례 지원)"));
+  dlg->resize(520, 250);
   auto* lay = new QVBoxLayout(dlg);
   auto* radRow = new QHBoxLayout();
   radRow->addWidget(new QLabel(QStringLiteral("조사구역 중심 수집 반경:"), dlg));
@@ -132,32 +133,39 @@ void openPaleoSourceDialog(
   lay->addWidget(countLabel);
   auto refreshCounts = [countLabel] {
     QgsProject* p = QgsProject::instance();
+    auto* geol = qobject_cast<QgsVectorLayer*>(GeologyMapService::existingGeologyLayer(p));
     auto* bh = GeoInfoBoreholeService::findBoreholeLayer(p);
-    long long bhCnt = bh ? bh->featureCount() : 0, kigamPts = 0, kigamFlts = 0;
+    long long geolCnt = geol ? geol->featureCount() : 0, bhCnt = bh ? bh->featureCount() : 0, kigamPts = 0, kigamFlts = 0;
     for (QgsMapLayer* l : p->mapLayersByName(QStringLiteral("고지형 수문·연대(KIGAM)")))
       if (auto* v = qobject_cast<QgsVectorLayer*>(l)) kigamPts += v->featureCount();
     for (QgsMapLayer* l : p->mapLayersByName(QStringLiteral("단층·선구조(KIGAM 1:5만)")))
       if (auto* v = qobject_cast<QgsVectorLayer*>(l)) kigamFlts += v->featureCount();
     countLabel->setText(
-        QStringLiteral("현재 적재 현황 — 국토지반정보 유효 시추공: <b>%1공</b> (최대 50공) · "
-                       "KIGAM 수문·단구연대: <b>%2건</b> · 단층: <b>%3건</b>")
-            .arg(bhCnt).arg(kigamPts).arg(kigamFlts));
+        QStringLiteral("현재 적재 현황 — 수치지질도(1:5만): <b>%1건</b> · 시추공(퇴적층두께): <b>%2공</b> · "
+                       "KIGAM 수문·단구연대: <b>%3건</b> · 단층: <b>%4건</b>")
+            .arg(geolCnt).arg(bhCnt).arg(kigamPts).arg(kigamFlts));
   };
   refreshCounts();
   QObject::connect(QgsProject::instance(), &QgsProject::layersAdded, dlg, refreshCounts);
   QObject::connect(QgsProject::instance(), &QgsProject::layersRemoved, dlg, refreshCounts);
-  auto runDl = [radCombo, triggerDl](bool kigam, bool geoinfo) {
-    if (triggerDl) triggerDl(radCombo->currentData().toDouble(), kigam, geoinfo);
+  auto runDl = [radCombo, triggerDl](bool geol, bool kigam, bool geoinfo) {
+    if (triggerDl) triggerDl(radCombo->currentData().toDouble(), geol, kigam, geoinfo);
   };
-  auto* btnBoth = new QPushButton(QStringLiteral("KIGAM + 국토지반정보 시추주상도 연속 내려받기"), dlg);
-  btnBoth->setObjectName(QStringLiteral("btnPrimary"));
-  QObject::connect(btnBoth, &QPushButton::clicked, dlg, [runDl] { runDl(true, true); });
-  lay->addWidget(btnBoth);
+  auto* btnAll = new QPushButton(QStringLiteral("수치지질도(1:5만) + 시추주상도(퇴적층) + KIGAM 연속 받기"), dlg);
+  btnAll->setObjectName(QStringLiteral("btnPrimary"));
+  QObject::connect(btnAll, &QPushButton::clicked, dlg, [runDl] { runDl(true, true, true); });
+  lay->addWidget(btnAll);
   auto* subRow = new QHBoxLayout();
-  auto* btnBh = new QPushButton(QStringLiteral("시추주상도만 받기"), dlg);
-  auto* btnKg = new QPushButton(QStringLiteral("KIGAM 자료만 받기"), dlg);
-  QObject::connect(btnBh, &QPushButton::clicked, dlg, [runDl] { runDl(false, true); });
-  QObject::connect(btnKg, &QPushButton::clicked, dlg, [runDl] { runDl(true, false); });
+  auto* btnGeol = new QPushButton(QStringLiteral("수치지질도(1:5만)만 받기"), dlg);
+  btnGeol->setObjectName(QStringLiteral("btnDownloadGeologyOnly"));
+  auto* btnBh = new QPushButton(QStringLiteral("시추주상도·퇴적층만 받기"), dlg);
+  btnBh->setObjectName(QStringLiteral("btnDownloadBoreholeOnly"));
+  auto* btnKg = new QPushButton(QStringLiteral("KIGAM 단층·수문만 받기"), dlg);
+  btnKg->setObjectName(QStringLiteral("btnDownloadKigamOnly"));
+  QObject::connect(btnGeol, &QPushButton::clicked, dlg, [runDl] { runDl(true, false, false); });
+  QObject::connect(btnBh, &QPushButton::clicked, dlg, [runDl] { runDl(false, false, true); });
+  QObject::connect(btnKg, &QPushButton::clicked, dlg, [runDl] { runDl(false, true, false); });
+  subRow->addWidget(btnGeol);
   subRow->addWidget(btnBh);
   subRow->addWidget(btnKg);
   lay->addLayout(subRow);
@@ -166,44 +174,6 @@ void openPaleoSourceDialog(
 #endif
 
 }  // namespace
-
-namespace KaPaleoMenu {
-
-void install(QToolButton* button, QWidget* host, const std::function<void()>& trigger) {
-  if (!button || !host || button->menu()) return;
-  button->setPopupMode(QToolButton::MenuButtonPopup);
-  button->setContextMenuPolicy(Qt::CustomContextMenu);
-  auto* menu = new QMenu(button);
-
-  auto addItem = [&](const QString& objName, const QString& text) {
-    auto* act = menu->addAction(KaIcons::icon(QStringLiteral("paleo")), text);
-    act->setObjectName(objName);
-    QObject::connect(act, &QAction::triggered, host, [button, objName, trigger] {
-      if (button) button->setProperty("paleoAction", objName);
-      if (trigger) trigger();
-    });
-  };
-  addItem(QStringLiteral("actionPaleoRun"),
-          QStringLiteral("「고지형분석」 전용 탭 열기"));
-  addItem(QStringLiteral("actionPaleoSourcesDialog"),
-          QStringLiteral("시추주상도(국토지반정보) · KIGAM 자료 내려받기 창…"));
-  menu->addSeparator();
-  addItem(QStringLiteral("actionPaleoGeoInfo"),
-          QStringLiteral("국토지반정보 시추주상도 내려받기 (반경 5km)"));
-  addItem(QStringLiteral("actionPaleoKigam"),
-          QStringLiteral("KIGAM 단층·지하수위·단구연대 내려받기 (반경 10km)"));
-  menu->addSeparator();
-  addItem(QStringLiteral("actionPaleoPortalGeoInfo"),
-          QStringLiteral("국토지반정보 포털 열기 (geoinfo.or.kr)…"));
-  addItem(QStringLiteral("actionPaleoPortalKigam"),
-          QStringLiteral("KIGAM 지오빅데이터 포털 열기 (data.kigam.re.kr)…"));
-
-  button->setMenu(menu);
-  QObject::connect(button, &QToolButton::customContextMenuRequested, host,
-                   [button, menu](const QPoint& pos) { menu->exec(button->mapToGlobal(pos)); });
-}
-
-}  // namespace KaPaleoMenu
 
 void MainWindow::startPaleoLandform() {
 #if KA_HGIS_HAS_QGIS
@@ -225,31 +195,57 @@ void MainWindow::startPaleoLandform() {
     return;
   }
 
-  auto runSourceDl = [this](double rad, bool kigam, bool geoinfo) {
+  auto runSourceDl = [this](double rad, bool geol, bool kigam, bool geoinfo) {
     if (m_surveyPath.isEmpty()) return;
     const QgsRectangle ext5186 = surveyRadius5186(QgsProject::instance(), m_canvas, rad);
     const QString surveyDir = QFileInfo(m_surveyPath).absolutePath();
     QgsProject::instance()->setProperty("paleoGeoInfoAttempted", !(kigam && geoinfo));
-    if (kigam)
+    if (geol) {
+      startReferenceDownload(ReferenceMapKind::Geology, ext5186,
+                             QDir(surveyDir).filePath(QStringLiteral("지질도_KIGAM.gpkg")));
+      if (kigam || geoinfo) {
+        auto* waitTimer = new QTimer(this);
+        connect(waitTimer, &QTimer::timeout, this, [this, waitTimer, ext5186, surveyDir, kigam, geoinfo] {
+          if (m_referenceDownload) return;
+          waitTimer->stop();
+          waitTimer->deleteLater();
+          if (kigam)
+            startReferenceDownload(ReferenceMapKind::KigamPaleo, ext5186,
+                                   QDir(surveyDir).filePath(QStringLiteral("고지형_KIGAM.gpkg")));
+          else if (geoinfo)
+            startReferenceDownload(ReferenceMapKind::GeoInfoBorehole, ext5186,
+                                   QDir(surveyDir).filePath(QStringLiteral("시추주상도_국토지반정보.gpkg")));
+        });
+        waitTimer->start(400);
+      }
+    } else if (kigam) {
       startReferenceDownload(ReferenceMapKind::KigamPaleo, ext5186,
                              QDir(surveyDir).filePath(QStringLiteral("고지형_KIGAM.gpkg")));
-    else if (geoinfo)
+    } else if (geoinfo) {
       startReferenceDownload(ReferenceMapKind::GeoInfoBorehole, ext5186,
                              QDir(surveyDir).filePath(QStringLiteral("시추주상도_국토지반정보.gpkg")));
+    }
   };
   if (actionName == QLatin1String("actionPaleoSourcesDialog")) {
     openPaleoSourceDialog(this, m_surveyPath, runSourceDl);
     return;
   }
-  if (actionName == QLatin1String("actionPaleoGeoInfo") ||
+  if (actionName == QLatin1String("actionGeology5k") ||
+      actionName.startsWith(QLatin1String("actionGeology")) ||
+      actionName == QLatin1String("actionPaleoGeoInfo") ||
       actionName == QLatin1String("actionPaleoKigam")) {
     if (m_surveyPath.isEmpty()) {
-      QMessageBox::information(this, QStringLiteral("고지형분석"),
+      QMessageBox::information(this, QStringLiteral("자료 내려받기"),
                                QStringLiteral("먼저 「새 조사」로 저장 위치를 만드세요."));
       return;
     }
+    const bool isGeol = actionName.startsWith(QLatin1String("actionGeology"));
     const bool isGeoInfo = (actionName == QLatin1String("actionPaleoGeoInfo"));
-    runSourceDl(isGeoInfo ? 5000.0 : PaleoAnalysisRunner::kRadiusMeters, !isGeoInfo, isGeoInfo);
+    const double rad = (actionName == QLatin1String("actionGeology2k"))   ? 2000.0
+                       : (actionName == QLatin1String("actionGeology10k") ||
+                          actionName == QLatin1String("actionPaleoKigam")) ? 10000.0
+                                                                           : 5000.0;
+    runSourceDl(rad, isGeol, !isGeol && !isGeoInfo, isGeoInfo);
     return;
   }
 

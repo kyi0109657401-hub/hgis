@@ -429,27 +429,27 @@ bool GeologyMapService::applyGeologyStyle(QgsVectorLayer* layer,
     s.drawLabels = true;
     s.fieldName = QString::fromUtf8(kSymbolField);
     s.isExpression = false;
-    s.placement = Qgis::LabelPlacement::OverPoint;
+    s.placement = Qgis::LabelPlacement::Horizontal;
+    s.centroidWhole = true;
     s.setPolygonPlacementFlags(Qgis::LabelPolygonPlacementFlag::AllowPlacementInsideOfPolygon);
     QgsLabelObstacleSettings obs = s.obstacleSettings();
     obs.setIsObstacle(false);
     s.setObstacleSettings(obs);
-
     QgsTextFormat fmt;
     QFont font = fmt.font();
     font.setFamily(QStringLiteral("Malgun Gothic"));
-    font.setPointSize(8);
+    font.setPointSize(9);
+    font.setBold(true);
     fmt.setFont(font);
-    fmt.setSize(8);
+    fmt.setSize(9);
     fmt.setSizeUnit(Qgis::RenderUnit::Points);
-    fmt.setColor(QColor(40, 40, 40));
+    fmt.setColor(QColor(24, 24, 24));
     QgsTextBufferSettings buf = fmt.buffer();
     buf.setEnabled(true);
-    buf.setSize(0.6);
-    buf.setColor(QColor(255, 255, 255, 220));
+    buf.setSize(0.85);
+    buf.setColor(QColor(255, 255, 255, 235));
     fmt.setBuffer(buf);
     s.setFormat(fmt);
-
     layer->setLabeling(new QgsVectorLayerSimpleLabeling(s));
     layer->setLabelsEnabled(true);
   }

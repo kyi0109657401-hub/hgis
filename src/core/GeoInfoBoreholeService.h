@@ -5,11 +5,13 @@
 #include <QByteArray>
 #include <QList>
 #include <QString>
+#include <qgspointxy.h>
 
 class QgsCoordinateTransformContext;
 class QgsFeedback;
 class QgsMapCanvas;
 class QgsProject;
+class QgsRasterLayer;
 class QgsRectangle;
 class QgsVectorLayer;
 
@@ -69,6 +71,21 @@ public:
   static QgsVectorLayer* addPrepared(QgsProject* project, QgsMapCanvas* canvas,
                                      const PreparedReferenceMap& prepared,
                                      QString* errorOut = nullptr);
+
+  struct HoleCandidate {
+    QString code;
+    QgsPointXY pt5186;
+    bool hasPt5186 = false;
+  };
+
+  static QList<HoleCandidate> selectSpatiallyBalancedCandidates(
+      const QList<HoleCandidate>& rawCandidates, const QgsPointXY& center5186,
+      int maxCount = 50, double cellMeters = 150.0);
+
+  static QgsRasterLayer* registerAlluvialIsopachLayer(QgsProject* project,
+                                                      QgsMapCanvas* canvas,
+                                                      QgsVectorLayer* boreholeLayer,
+                                                      const QString& surveyPath);
 
   static bool applyBoreholeStyle(QgsVectorLayer* layer);
   static QgsVectorLayer* findBoreholeLayer(QgsProject* project);

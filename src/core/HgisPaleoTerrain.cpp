@@ -1,7 +1,12 @@
 #include "HgisPaleoEngine.h"
+#include "PaleoAnalysisRunner.h"
 
+#include <QDir>
+#include <QFileInfo>
 #include <algorithm>
 #include <cmath>
+#include <cpl_conv.h>
+#include <gdal_priv.h>
 #include <limits>
 
 namespace hgis::paleo {
@@ -171,3 +176,66 @@ void HgisPaleoEngine::compute_terrain_derivatives(const GridTransform& tf,
 }
 
 }  // namespace hgis::paleo
+
+bool PaleoAnalysisRunner::writeRgbaGeoTiff(const QString& outPath, const hgis::paleo::GridTransform& tf,
+                                           const QString& crsWkt, const std::vector<uint8_t>& rgba,
+                                           QString* errorOut) {
+  if (tf.width <= 0 || tf.height <= 0 || rgba.size() < static_cast<size_t>(tf.width) * tf.height * 4) {
+    if (errorOut) *errorOut = QStringLiteral("RGBA 격자 크기가 올바르지 않습니다.");
+    return false;
+  }
+  GDALAllRegister();
+  CPLSetConfigOption("GDAL_FILENAME_IS_UTF8", "YES");
+  QDir().mkpath(QFileInfo(outPath).absolutePath());
+  GDALDriver* drv = GetGDALDriverManager()->GetDriverByName("GTiff");
+  if (!drv) return false;
+  const char* opts[] = {"COMPRESS=DEFLATE", "TILED=YES", nullptr};
+  GDALDataset* ds = drv->Create(outPath.toUtf8().constData(), tf.width, tf.height, 4, GDT_Byte,
+                                const_cast<char**>(opts));
+  if (!ds) return false;
+  double gt[6] = {tf.origin_x, tf.cell_size, 0.0, tf.origin_y, 0.0, -tf.cell_size};
+  ds->SetGeoTransform(gt);
+  if (!crsWkt.isEmpty()) ds->SetProjection(crsWkt.toUtf8().constData());
+  const size_t n = static_cast<size_t>(tf.width) * tf.height;
+  std::vector<uint8_t> bandBuf(n);
+  const GDALColorInterp interps[4] = {GCI_RedBand, GCI_GreenBand, GCI_BlueBand, GCI_AlphaBand};
+  for (int b = 0; b < 4; ++b) {
+    for (size_t i = 0; i < n; ++i) bandBuf[i] = rgba[i * 4 + b];
+    GDALRasterBand* band = ds->GetRasterBand(b + 1);
+    band->SetColorInterpretation(interps[b]);
+    band->RasterIO(GF_Write, 0, 0, tf.width, tf.height, bandBuf.data(), tf.width, tf.height,
+                   GDT_Byte, 0, 0);
+  }
+  GDALClose(ds);
+  return true;
+}
+
+bool PaleoAnalysisRunner::writeFloatGeoTiff(const QString& outPath, const hgis::paleo::GridTransform& tf,
+                                            const QString& crsWkt, const std::vector<double>& values,
+                                            QString* errorOut) {
+  if (tf.width <= 0 || tf.height <= 0 || values.size() < static_cast<size_t>(tf.width) * tf.height) {
+    if (errorOut) *errorOut = QStringLiteral("실수 격자 크기가 올바르지 않습니다.");
+    return false;
+  }
+  GDALAllRegister();
+  CPLSetConfigOption("GDAL_FILENAME_IS_UTF8", "YES");
+  QDir().mkpath(QFileInfo(outPath).absolutePath());
+  GDALDriver* drv = GetGDALDriverManager()->GetDriverByName("GTiff");
+  if (!drv) return false;
+  const char* opts[] = {"COMPRESS=DEFLATE", "TILED=YES", nullptr};
+  GDALDataset* ds = drv->Create(outPath.toUtf8().constData(), tf.width, tf.height, 1, GDT_Float32,
+                                const_cast<char**>(opts));
+  if (!ds) return false;
+  double gt[6] = {tf.origin_x, tf.cell_size, 0.0, tf.origin_y, 0.0, -tf.cell_size};
+  ds->SetGeoTransform(gt);
+  if (!crsWkt.isEmpty()) ds->SetProjection(crsWkt.toUtf8().constData());
+  const size_t n = static_cast<size_t>(tf.width) * tf.height;
+  std::vector<float> buf(n);
+  for (size_t i = 0; i < n; ++i) buf[i] = static_cast<float>(values[i]);
+  GDALRasterBand* band = ds->GetRasterBand(1);
+  band->SetNoDataValue(-9999.0);
+  band->RasterIO(GF_Write, 0, 0, tf.width, tf.height, buf.data(), tf.width, tf.height, GDT_Float32,
+                 0, 0);
+  GDALClose(ds);
+  return true;
+}

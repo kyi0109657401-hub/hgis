@@ -17,15 +17,9 @@ PaleoAnalysisResult HgisPaleoEngine::run_pipeline(
     std::string_view dominant_soil_label, std::string_view dominant_geol_label) {
   PaleoAnalysisResult res;
   res.transform = tf;
-  const int H = tf.height;
-  const int W = tf.width;
+  const int H = tf.height, W = tf.width;
   const size_t N = static_cast<size_t>(H) * W;
-
-  std::vector<double> bh_x;
-  std::vector<double> bh_y;
-  std::vector<double> bh_fill;
-  std::vector<double> bh_base;
-  std::vector<double> bh_coarse;
+  std::vector<double> bh_x, bh_y, bh_fill, bh_base, bh_coarse;
 
   for (const auto& bh : raw_boreholes) {
     ParsedBoreholeSummary parsed = parse_single_borehole(bh);
@@ -34,7 +28,7 @@ PaleoAnalysisResult HgisPaleoEngine::run_pipeline(
     bh_fill.push_back(parsed.fill_thickness_m);
     bh_base.push_back(parsed.weathered_top_depth_m);
     bh_coarse.push_back(parsed.sed_type == "Coarse" ? 1.0 : (parsed.sed_type == "Fine" ? 0.0 : 0.5));
-    res.parsed_boreholes.push_back( std::move(parsed));
+    res.parsed_boreholes.push_back(std::move(parsed));
   }
 
   if (!bh_x.empty()) {
@@ -54,11 +48,27 @@ PaleoAnalysisResult HgisPaleoEngine::run_pipeline(
       break;
     }
   }
-  res.z_paleo.resize(N);
+  std::vector<double> z_raw(N);
   for (size_t i = 0; i < N; ++i) {
     const double zc = (std::isfinite(z_curr[i]) && z_curr[i] > -500.0) ? z_curr[i] : fallback_z;
     fallback_z = zc;
-    res.z_paleo[i] = zc - res.fill_depth_grid[i];
+    z_raw[i] = zc - res.fill_depth_grid[i];
+  }
+  res.z_paleo.resize(N);
+  for (int r = 0; r < H; ++r) {
+    for (int c = 0; c < W; ++c) {
+      double sum = 0.0, wsum = 0.0;
+      for (int dr = -1; dr <= 1; ++dr) {
+        const int rr = std::clamp(r + dr, 0, H - 1);
+        for (int dc = -1; dc <= 1; ++dc) {
+          const int cc = std::clamp(c + dc, 0, W - 1);
+          const double w = (dr == 0 && dc == 0) ? 4.0 : ((dr == 0 || dc == 0) ? 2.0 : 1.0);
+          sum += w * z_raw[static_cast<size_t>(rr) * W + cc];
+          wsum += w;
+        }
+      }
+      res.z_paleo[static_cast<size_t>(r) * W + c] = sum / wsum;
+    }
   }
 
   std::vector<double> riv_x;
@@ -135,11 +145,43 @@ PaleoAnalysisResult HgisPaleoEngine::run_pipeline(
     }
 
     res.paleo_class_grid[i] = cls;
-    const auto& rgba = kPaleoClassTable[static_cast<size_t>(cls)].rgba;
-    res.paleo_rgba_buffer[i * 4 + 0] = rgba[0];
-    res.paleo_rgba_buffer[i * 4 + 1] = rgba[1];
-    res.paleo_rgba_buffer[i * 4 + 2] = rgba[2];
-    res.paleo_rgba_buffer[i * 4 + 3] = rgba[3];
+  }
+
+  for (int pass = 0; pass < 2; ++pass) {
+    std::vector<PaleoClass> filtered = res.paleo_class_grid;
+    for (int r = 0; r < H; ++r) {
+      for (int c = 0; c < W; ++c) {
+        std::array<int, 8> counts{};
+        for (int dr = -1; dr <= 1; ++dr) {
+          const int rr = std::clamp(r + dr, 0, H - 1);
+          for (int dc = -1; dc <= 1; ++dc) {
+            const int cc = std::clamp(c + dc, 0, W - 1);
+            const size_t code = static_cast<size_t>(res.paleo_class_grid[static_cast<size_t>(rr) * W + cc]);
+            if (code < counts.size()) counts[code] += (dr == 0 && dc == 0) ? 2 : 1;
+          }
+        }
+        size_t bestCode = static_cast<size_t>(res.paleo_class_grid[static_cast<size_t>(r) * W + c]);
+        for (size_t code = 1; code < counts.size(); ++code) {
+          if (counts[code] > counts[bestCode]) bestCode = code;
+        }
+        filtered[static_cast<size_t>(r) * W + c] = static_cast<PaleoClass>(bestCode);
+      }
+    }
+    res.paleo_class_grid.swap(filtered);
+  }
+
+  for (size_t i = 0; i < N; ++i) {
+    const auto& rgba = kPaleoClassTable[static_cast<size_t>(res.paleo_class_grid[i])].rgba;
+    const double hs = (res.multidirectional_hillshade[i] - 128.0) / 127.0;
+    const double ao = std::clamp(res.tpi_50m[i] / 5.0, -0.15, 0.15) * 20.0;
+    const double slp = std::clamp(res.slope_deg[i] / 40.0, 0.0, 1.0) * 14.0;
+    const double dr = (hs >= 0.0 ? 24.0 * hs : 32.0 * hs) + ao - slp;
+    const double dg = (hs >= 0.0 ? 20.0 * hs : 28.0 * hs) + ao - slp;
+    const double db = (hs >= 0.0 ? 10.0 * hs : 18.0 * hs) + ao * 0.7 - slp * 0.6;
+    res.paleo_rgba_buffer[i * 4 + 0] = static_cast<uint8_t>(std::clamp(std::lround(rgba[0] + dr), 0L, 255L));
+    res.paleo_rgba_buffer[i * 4 + 1] = static_cast<uint8_t>(std::clamp(std::lround(rgba[1] + dg), 0L, 255L));
+    res.paleo_rgba_buffer[i * 4 + 2] = static_cast<uint8_t>(std::clamp(std::lround(rgba[2] + db), 0L, 255L));
+    res.paleo_rgba_buffer[i * 4 + 3] = 216;
   }
 
   const int mid_r = H / 2;

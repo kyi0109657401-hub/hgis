@@ -18,6 +18,7 @@
 #include "KaStartPage.h"
 #include "KaMeasureMapTool.h"
 #include "core/DemAnalyzer.h"
+#include "core/PaleoAnalysisRunner.h"
 #include "core/TilePackService.h"
 #include "core/TrenchGridGenerator.h"
 #include "KaAboveLabelsOverlay.h"
@@ -404,6 +405,7 @@ void MainWindow::downloadSoilTerrain() {
 void MainWindow::downloadGeologyMap() {
 #if KA_HGIS_HAS_QGIS
   if (!m_canvas) return;
+  showMapWorkspace();
   if (toggleExistingOverlay(QgsProject::instance(), m_canvas,
                             QStringLiteral("지질도(KIGAM 1:5만)"), m_actGeology, statusBar())) {
     QgsProject* proj = QgsProject::instance();
@@ -411,6 +413,9 @@ void MainWindow::downloadGeologyMap() {
     if (on) {
       if (QgsMapLayer* geo = GeologyMapService::existingGeologyLayer(proj))
         GeologyMapService::ensureReliefUnderlay(proj, m_canvas, geo, nullptr);
+      const QgsRectangle r5k = PaleoAnalysisRunner::surveyExtentRadius(proj, m_canvas, 5000.0);
+      if (!r5k.isEmpty() && r5k.isFinite() && m_canvas->extent().width() > 15000.0)
+        m_canvas->setExtent(r5k);
       if (m_canvas && !m_canvas->isDrawing())
         LayerOps::syncMapCanvas(proj, m_canvas, false);
     }
@@ -423,15 +428,24 @@ void MainWindow::downloadGeologyMap() {
     if (m_actGeology) m_actGeology->setChecked(false);
     return;
   }
-  if (LayerOps::clampCanvasToThematicScale(m_canvas))
-    statusBar()->showMessage(QStringLiteral("축척을 1:100000으로 맞춘 뒤 지질도를 받습니다."), 4000);
-
+  QgsProject* proj = QgsProject::instance();
   QgsRectangle ext = m_canvas->extent();
+  if (!LayerOps::findAllByLayerKey(proj, QStringLiteral("survey_area")).isEmpty()) {
+    const QgsRectangle r5k = PaleoAnalysisRunner::surveyExtentRadius(proj, m_canvas, 5000.0);
+    if (!r5k.isEmpty() && r5k.isFinite()) {
+      ext = r5k;
+      m_canvas->setExtent(r5k);
+    }
+  } else if (LayerOps::clampCanvasToThematicScale(m_canvas)) {
+    ext = m_canvas->extent();
+    statusBar()->showMessage(QStringLiteral("축척을 1:100000으로 맞춘 뒤 지질도를 받습니다."), 4000);
+  }
   const QgsCoordinateReferenceSystem crs5186(QStringLiteral("EPSG:5186"));
-  const QgsCoordinateReferenceSystem canvasCrs = m_canvas->mapSettings().destinationCrs();
-  if (canvasCrs.isValid() && canvasCrs != crs5186) {
+  const QgsCoordinateReferenceSystem srcCrs =
+      proj->crs().isValid() ? proj->crs() : m_canvas->mapSettings().destinationCrs();
+  if (srcCrs.isValid() && srcCrs != crs5186) {
     try {
-      const QgsCoordinateTransform tr(canvasCrs, crs5186, QgsProject::instance());
+      const QgsCoordinateTransform tr(srcCrs, crs5186, proj);
       ext = tr.transformBoundingBox(ext);
     } catch (const QgsException&) {
       notify(Notice::Critical, QStringLiteral("지질도"),
@@ -621,6 +635,17 @@ void MainWindow::startReferenceDownload(ReferenceMapKind kind, const QgsRectangl
         QTimer::singleShot(0, window, [window, extent, bhGpkg] {
           if (window && !window->m_closingWindow)
             window->startReferenceDownload(ReferenceMapKind::GeoInfoBorehole, extent, bhGpkg);
+        });
+      } else if (kind == ReferenceMapKind::Geology && !window->m_surveyPath.isEmpty() &&
+                 QgsProject::instance()
+                     ->mapLayersByName(QStringLiteral("단층·선구조(KIGAM 1:5만)"))
+                     .isEmpty()) {
+        QgsProject::instance()->setProperty("paleoGeoInfoAttempted", true);
+        const QString kgGpkg = QDir(QFileInfo(window->m_surveyPath).absolutePath())
+                                   .filePath(QStringLiteral("고지형_KIGAM.gpkg"));
+        QTimer::singleShot(0, window, [window, extent, kgGpkg] {
+          if (window && !window->m_closingWindow)
+            window->startReferenceDownload(ReferenceMapKind::KigamPaleo, extent, kgGpkg);
         });
       } else if (kind == ReferenceMapKind::GeoInfoBorehole) {
         if (auto* paleo = LayerOps::findByLayerKey(QgsProject::instance(),

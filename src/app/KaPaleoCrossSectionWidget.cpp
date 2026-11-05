@@ -1,10 +1,15 @@
 #include "KaPaleoStudio.h"
+#include "KaIcons.h"
+#include "KaPaleoMenu.h"
 
+#include <QAction>
 #include <QColor>
 #include <QFont>
+#include <QMenu>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPen>
+#include <QToolButton>
 #include <algorithm>
 #include <cmath>
 
@@ -90,3 +95,64 @@ void KaPaleoCrossSectionWidget::paintEvent(QPaintEvent*) {
   p.drawText(QRect(plot.left(), plot.bottom() + 4, 340, 18), Qt::AlignLeft,
              QStringLiteral("점선: 현 지표면 | 주황 실선: 복원 원지형(Z_paleo) | 갈색 실선: 생토면(풍화토) | 파란 파선: 하천 수면"));
 }
+
+namespace KaPaleoMenu {
+
+void install(QToolButton* button, QWidget* host, const std::function<void()>& trigger) {
+  if (!button || !host || button->menu()) return;
+  auto bindMenu = [&](QToolButton* tb, QMenu* m) {
+    tb->setPopupMode(QToolButton::MenuButtonPopup);
+    tb->setContextMenuPolicy(Qt::CustomContextMenu);
+    tb->setMenu(m);
+    QObject::connect(tb, &QToolButton::customContextMenuRequested, host,
+                     [tb, m](const QPoint& pos) { m->exec(tb->mapToGlobal(pos)); });
+  };
+  auto addAct = [&](QMenu* m, const QString& iconId, const QString& objName, const QString& text) {
+    auto* act = m->addAction(KaIcons::icon(iconId), text);
+    act->setObjectName(objName);
+    QObject::connect(act, &QAction::triggered, host, [button, objName, trigger] {
+      if (button) button->setProperty("paleoAction", objName);
+      if (trigger) trigger();
+    });
+  };
+  auto* menu = new QMenu(button);
+  addAct(menu, QStringLiteral("paleo"), QStringLiteral("actionPaleoRun"),
+         QStringLiteral("「고지형분석」 전용 탭 열기"));
+  addAct(menu, QStringLiteral("paleo"), QStringLiteral("actionPaleoSourcesDialog"),
+         QStringLiteral("수치지질도 · 시추주상도(지반) · KIGAM 별도 내려받기 창…"));
+  menu->addSeparator();
+  addAct(menu, QStringLiteral("geology"), QStringLiteral("actionGeology5k"),
+         QStringLiteral("수치지질도(KIGAM 1:5만) 별도 받기 (반경 5km · 도면 범례)"));
+  addAct(menu, QStringLiteral("paleo"), QStringLiteral("actionPaleoGeoInfo"),
+         QStringLiteral("국토지반정보 시추주상도·퇴적층두께 별도 받기 (반경 5km · 도면 범례)"));
+  addAct(menu, QStringLiteral("paleo"), QStringLiteral("actionPaleoKigam"),
+         QStringLiteral("KIGAM 단층·지하수위·단구연대 별도 받기 (반경 10km)"));
+  menu->addSeparator();
+  addAct(menu, QStringLiteral("paleo"), QStringLiteral("actionPaleoPortalGeoInfo"),
+         QStringLiteral("국토지반정보 포털 열기 (geoinfo.or.kr)…"));
+  addAct(menu, QStringLiteral("paleo"), QStringLiteral("actionPaleoPortalKigam"),
+         QStringLiteral("KIGAM 지오빅데이터 포털 열기 (data.kigam.re.kr)…"));
+  bindMenu(button, menu);
+
+  for (auto* tb : host->findChildren<QToolButton*>()) {
+    if (!tb || tb->text() != QStringLiteral("지질") || tb->menu()) continue;
+    auto* geoMenu = new QMenu(tb);
+    addAct(geoMenu, QStringLiteral("geology"), QStringLiteral("actionGeology5k"),
+           QStringLiteral("조사구역 반경 5km 수치지질도 받기 (1:5만 · 권장)"));
+    addAct(geoMenu, QStringLiteral("geology"), QStringLiteral("actionGeology2k"),
+           QStringLiteral("조사구역 반경 2km 수치지질도 받기"));
+    addAct(geoMenu, QStringLiteral("geology"), QStringLiteral("actionGeology10k"),
+           QStringLiteral("조사구역 반경 10km 수치지질도 받기"));
+    geoMenu->addSeparator();
+    addAct(geoMenu, QStringLiteral("paleo"), QStringLiteral("actionPaleoGeoInfo"),
+           QStringLiteral("국토지반정보 시추주상도·퇴적층두께 별도 받기 (반경 5km)"));
+    addAct(geoMenu, QStringLiteral("paleo"), QStringLiteral("actionPaleoKigam"),
+           QStringLiteral("KIGAM 단층·선구조·수문 별도 받기 (반경 10km)"));
+    addAct(geoMenu, QStringLiteral("paleo"), QStringLiteral("actionPaleoSourcesDialog"),
+           QStringLiteral("수치지질도 · 시추주상도 별도 내려받기 창…"));
+    bindMenu(tb, geoMenu);
+    break;
+  }
+}
+
+}  // namespace KaPaleoMenu

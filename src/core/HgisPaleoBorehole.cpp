@@ -3,13 +3,21 @@
 #include "KaLogExcept.h"
 #include "PaleoAnalysisRunner.h"
 
+#include <QColor>
+#include <QFont>
 #include <qgscoordinatereferencesystem.h>
 #include <qgscoordinatetransform.h>
 #include <qgsfeature.h>
 #include <qgsfeatureiterator.h>
 #include <qgsgeometry.h>
+#include <qgslayoutitemlabel.h>
+#include <qgslayoutmanager.h>
+#include <qgslayoutpoint.h>
+#include <qgslayoutsize.h>
 #include <qgspointxy.h>
+#include <qgsprintlayout.h>
 #include <qgsproject.h>
+#include <qgstextformat.h>
 #include <qgsvectorlayer.h>
 
 #include <algorithm>
@@ -113,16 +121,11 @@ ParsedBoreholeSummary HgisPaleoEngine::parse_single_borehole(const BoreholeRawIn
   const std::string color_hex = (sed_type == "Coarse")
                                     ? "#FF9800"
                                     : ((sed_type == "Fine") ? "#00ACC1" : "#9E9E9E");
-  const std::string sed_kor = (sed_type == "Coarse")
-                                  ? "사질·자갈"
-                                  : ((sed_type == "Fine") ? "점토·실트" : "혼합");
 
   std::ostringstream oss;
   oss << std::fixed << std::setprecision(1);
-  oss << "[" << bh.hole_id << "] 표고 " << bh.ground_elev_m << "m | "
-      << "매립 " << fill_bottom << "m / 충적 " << alluv_thick << "m(" << sed_kor << ":"
-      << dom_uscs << ") / 생토 " << final_base_top << "m / 수위 -" << std::abs(bh.water_depth_m)
-      << "m";
+  oss << bh.hole_id << " (충적 " << alluv_thick << "m·" << dom_uscs
+      << " / 생토 -" << final_base_top << "m)";
 
   return ParsedBoreholeSummary{bh.hole_id,
                                bh.x,
@@ -222,4 +225,33 @@ std::vector<hgis::paleo::BoreholeRawInput> PaleoAnalysisRunner::collectBoreholes
     }
   }
   return out;
+}
+
+bool PaleoAnalysisRunner::applyEvidenceToSheet(QgsProject* project,
+                                               const hgis::paleo::PaleoAnalysisResult& res) {
+  if (!project || !project->layoutManager()) return false;
+  auto* ly = dynamic_cast<QgsPrintLayout*>(
+      project->layoutManager()->layoutByName(QStringLiteral("user_sheet")));
+  if (!ly) return false;
+  auto* label =
+      dynamic_cast<QgsLayoutItemLabel*>(ly->itemById(QStringLiteral("ka_paleo_evidence_box")));
+  if (!label) {
+    label = new QgsLayoutItemLabel(ly);
+    label->setId(QStringLiteral("ka_paleo_evidence_box"));
+    ly->addLayoutItem(label);
+    label->attemptMove(QgsLayoutPoint(12.0, 210.0, Qgis::LayoutUnit::Millimeters));
+    label->attemptResize(QgsLayoutSize(185.0, 48.0, Qgis::LayoutUnit::Millimeters));
+  }
+  label->setText(QString::fromUtf8(res.aoi_summary_text.c_str()));
+  label->setBackgroundEnabled(true);
+  label->setBackgroundColor(QColor(255, 255, 255, 235));
+  label->setFrameEnabled(true);
+  QgsTextFormat tf;
+  tf.setFont(QFont(QStringLiteral("Malgun Gothic"), 7));
+  tf.setSize(7.2);
+  tf.setColor(QColor(20, 24, 31));
+  label->setTextFormat(tf);
+  label->setMarginX(2.0);
+  label->setMarginY(2.0);
+  return true;
 }

@@ -13,10 +13,10 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
-#include <QFont>
 #include <algorithm>
 #include <cmath>
 
+#include <qgsbilinearrasterresampler.h>
 #include <qgscoordinatereferencesystem.h>
 #include <qgscoordinatetransform.h>
 #include <qgsexception.h>
@@ -25,27 +25,39 @@
 #include <qgsfeaturerequest.h>
 #include <qgsfeedback.h>
 #include <qgsgeometry.h>
-#include <qgslayoutitemlabel.h>
-#include <qgslayoutmanager.h>
-#include <qgslayoutpoint.h>
-#include <qgslayoutsize.h>
+#include <qgslayertreelayer.h>
+#include <qgslayertreemodellegendnode.h>
 #include <qgsmapcanvas.h>
-#include <qgsprintlayout.h>
+#include <qgsmaplayerlegend.h>
 #include <qgsproject.h>
 #include <qgsrasterlayer.h>
-#include <qgstextformat.h>
+#include <qgsrasterresamplefilter.h>
 #include <qgsvectorlayer.h>
 
 namespace {
 
+class PaleoClassLegend final : public QgsMapLayerLegend {
+public:
+  explicit PaleoClassLegend(QObject* parent = nullptr) : QgsMapLayerLegend(parent) {}
+  QList<QgsLayerTreeModelLegendNode*> createLayerTreeModelLegendNodes(QgsLayerTreeLayer* node) override {
+    QList<QgsLayerTreeModelLegendNode*> out;
+    if (!node) return out;
+    for (size_t code = 1; code <= 7; ++code) {
+      const auto& meta = hgis::paleo::kPaleoClassTable[code];
+      out.append(new QgsRasterSymbolLegendNode(
+          node, QColor(meta.rgba[0], meta.rgba[1], meta.rgba[2]), QString::fromUtf8(meta.name_kor)));
+    }
+    return out;
+  }
+};
+
 QgsRasterLayer* registerNamedRaster(QgsProject* project, const QString& path, const QString& title) {
   if (!project || !QFileInfo::exists(path)) return nullptr;
-  for (QgsMapLayer* l : project->mapLayersByName(title))
-    if (l) project->removeMapLayer(l->id());
+  for (QgsMapLayer* l : project->mapLayersByName(title)) if (l) project->removeMapLayer(l->id());
   auto* rl = new QgsRasterLayer(path, title, QStringLiteral("gdal"));
   if (!rl->isValid()) { delete rl; return nullptr; }
-  LayerOps::markReferenceLayer(rl);
-  LayerOps::applyLegendCrsLabel(rl);
+  if (auto* rf = rl->resampleFilter()) rf->setZoomedInResampler(new QgsBilinearRasterResampler());
+  LayerOps::markReferenceLayer(rl); LayerOps::applyLegendCrsLabel(rl);
   if (!project->addMapLayer(rl, true)) { delete rl; return nullptr; }
   LayerOps::placeInLegendGroup(project, rl, QStringLiteral("참조 지도"));
   return rl;
@@ -151,7 +163,7 @@ hgis::paleo::PaleoAnalysisResult PaleoAnalysisRunner::runFullPipeline(QgsProject
     demLayer = findPreferredDem(project);
   }
 
-  constexpr int kGridN = 160;
+  constexpr int kGridN = 280;
   const QgsRectangle gridBox = surveyExtentRadius(project, canvas, 1500.0, nullptr, nullptr);
   const double cellSz = std::max(5.0, gridBox.width() / kGridN);
   hgis::paleo::GridTransform tf{gridBox.xMinimum(), gridBox.yMaximum(), cellSz, kGridN, kGridN};
@@ -256,7 +268,8 @@ hgis::paleo::PaleoAnalysisResult PaleoAnalysisRunner::runFullPipeline(QgsProject
   writeFloatGeoTiff(remTif, tf, wkt, res.rem, nullptr);
   if (auto* remLayer = registerNamedRaster(project, remTif, QStringLiteral("[고지형] 하상비고(REM)")))
     DemPresentation::apply(remLayer, QStringLiteral("viewport"), remLayer->extent());
-  registerNamedRaster(project, classTif, QStringLiteral("[고지형] 7대 고지형 분류도"));
+  if (auto* clsLayer = registerNamedRaster(project, classTif, QStringLiteral("[고지형] 7대 고지형 분류도")))
+    clsLayer->setLegend(new PaleoClassLegend(clsLayer));
   registerBoreholeMarkers(project, QDir(paleoDir).filePath(QStringLiteral("고지형_시추마커.gpkg")), res.parsed_boreholes);
   if (QgsVectorLayer* soil = PaleoLandformService::findSoilTerrainLayer(project)) {
     QString err;
@@ -269,27 +282,4 @@ hgis::paleo::PaleoAnalysisResult PaleoAnalysisRunner::runFullPipeline(QgsProject
   applyEvidenceToSheet(project, res);
   if (canvas) LayerOps::refreshCanvasIfIdle(canvas);
   return res;
-}
-
-bool PaleoAnalysisRunner::applyEvidenceToSheet(QgsProject* project,
-                                               const hgis::paleo::PaleoAnalysisResult& res) {
-  if (!project || !project->layoutManager()) return false;
-  auto* ly = dynamic_cast<QgsPrintLayout*>(project->layoutManager()->layoutByName(QStringLiteral("user_sheet")));
-  if (!ly) return false;
-  auto* label = dynamic_cast<QgsLayoutItemLabel*>(ly->itemById(QStringLiteral("ka_paleo_evidence_box")));
-  if (!label) {
-    label = new QgsLayoutItemLabel(ly);
-    label->setId(QStringLiteral("ka_paleo_evidence_box"));
-    ly->addLayoutItem(label);
-    label->attemptMove(QgsLayoutPoint(12.0, 210.0, Qgis::LayoutUnit::Millimeters));
-    label->attemptResize(QgsLayoutSize(185.0, 48.0, Qgis::LayoutUnit::Millimeters));
-  }
-  label->setText(QString::fromUtf8(res.aoi_summary_text.c_str()));
-  label->setBackgroundEnabled(true);
-  label->setBackgroundColor(QColor(255, 255, 255, 235));
-  label->setFrameEnabled(true);
-  QgsTextFormat tf;
-  tf.setFont(QFont(QStringLiteral("Malgun Gothic"), 7)); tf.setSize(7.2); tf.setColor(QColor(20, 24, 31));
-  label->setTextFormat(tf); label->setMarginX(2.0); label->setMarginY(2.0);
-  return true;
 }
